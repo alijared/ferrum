@@ -1,0 +1,28 @@
+[package]
+name = "ferrum-logs"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+axum = "0.8.1"
+arrow-json = "54.2.1"
+chrono = {version = "0.4.39", features = ["serde"]}
+clap = { version = "4.5.31", features = ["derive"] }
+env_logger = "0.11.6"
+datafusion = "45.0.0"
+ferum-ql = { path = "../ferum-ql" }
+futures-util = "0.3.31"
+jemallocator.workspace = true
+log = "0.4.25"
+num_cpus = "1.16.0"
+prost = "0.13.5"
+serde = { version = "1.0.218", features = ["derive"] }
+serde_json = "1.0.139"
+serde_yml = "0.0.12"
+thiserror = "2.0.11"
+tokio = { version = "1.43.0", features = ["macros", "rt-multi-thread", "signal"] }
+tokio-util = "0.7.13"
+tonic = "0.12.3"
+
+[build-dependencies]
+tonic-build = "0.12.3"

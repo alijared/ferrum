@@ -1,0 +1,19 @@
+[workspace]
+resolver = "2"
+members = [
+    "ferum-ql",
+    "logs",
+]
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+opt-level = 3
+panic = "abort"
+overflow-checks = false
+strip = true
+debug = false
+incremental = false
+
+[workspace.dependencies]
+jemallocator = "0.5.4"
