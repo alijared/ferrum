@@ -10,7 +10,7 @@ use chrono::{Datelike, TimeZone};
 use datafusion::arrow::array::{Array, AsArray, TimestampNanosecondArray};
 use datafusion::common::{DataFusionError, ScalarValue};
 use datafusion::dataframe::DataFrame;
-use datafusion::logical_expr::{col, lit, lit_timestamp_nano, Expr, Literal};
+use datafusion::logical_expr::{col, lit, lit_timestamp_nano, Expr};
 use datafusion::prelude::{get_field, regexp_match};
 use log::{error, info};
 use serde::{Deserialize, Serialize};
@@ -71,7 +71,7 @@ async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlRespo
     let query = ferum_ql::parse(&params.query.unwrap_or("{}".to_string())).map_err(|e| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
-            format!("failed to parse query: {}", e).as_str(),
+            format!("Failed to parse query: {}", e).as_str(),
         )
     })?;
 
@@ -98,11 +98,12 @@ async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlRespo
         .and_then(|df| df.drop_columns(&["day"]))
         .map_err(ApiError::from_df_error)?;
 
-    let df = apply_fql_filter(df, col("level"), query.level)
-        .and_then(|df| apply_fql_filter(df, col("message"), query.message))
+    let selector = query.selector;
+    let df = apply_fql_filter(df, selector.level, false)
+        .and_then(|df| apply_fql_filter(df, selector.message, false))
         .and_then(|mut df| {
-            for (key, filter) in query.attributes {
-                df = apply_fql_filter(df, get_field(col("attributes"), key), Some(filter))?;
+            for filter in selector.attributes {
+                df = apply_fql_filter(df, Some(filter), true)?;
             }
             Ok(df)
         })?;
@@ -110,7 +111,7 @@ async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlRespo
         .sort(vec![col("timestamp").sort(false, false)])
         .map_err(ApiError::from_df_error)?;
 
-    if query.functions.contains_key(&ferum_ql::Function::Count) {
+    if query.map_functions.contains(&ferum_ql::Function::Count) {
         let count = df.count().await.map_err(ApiError::from_df_error)?;
         return Ok(Json(FqlResponse::Count { count }));
     }
@@ -123,7 +124,7 @@ async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlRespo
         .await
         .map_err(ApiError::from_df_error)?;
 
-    let should_serialize_message = query.functions.contains_key(&ferum_ql::Function::Json);
+    let should_serialize_message = query.map_functions.contains(&ferum_ql::Function::Json);
     let mut results = Vec::new();
     for mut stream in partition_streams {
         while let Some(batch_result) = stream.next().await {
@@ -183,18 +184,28 @@ async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlRespo
     Ok(Json(FqlResponse::Data(results)))
 }
 
-fn apply_fql_filter<T: Literal>(
+fn apply_fql_filter(
     df: DataFrame,
-    mut expr: Expr,
-    filter: Option<ferum_ql::Filter<T>>,
+    filter: Option<ferum_ql::Filter>,
+    nested: bool,
 ) -> Result<DataFrame, ApiError> {
     if let Some(filter) = filter {
+        let mut expr = if nested {
+            get_field(col("attributes"), filter.key)
+        } else {
+            col(filter.key)
+        };
+
         match filter.op {
-            ferum_ql::Operation::Eq => expr = expr.eq(lit(filter.value)),
-            ferum_ql::Operation::Neq => expr = expr.not_eq(lit(filter.value)),
-            ferum_ql::Operation::Regex => {
+            ferum_ql::ComparisonOp::Eq => expr = expr.eq(lit(filter.value)),
+            ferum_ql::ComparisonOp::Neq => expr = expr.not_eq(lit(filter.value)),
+            ferum_ql::ComparisonOp::Regex => {
                 expr = regexp_match(expr, lit(filter.value), None).is_not_null()
             }
+            ferum_ql::ComparisonOp::Greater => {}
+            ferum_ql::ComparisonOp::GreaterEq => {}
+            ferum_ql::ComparisonOp::Less => {}
+            ferum_ql::ComparisonOp::LessEq => {}
         }
         return df.filter(expr).map_err(ApiError::from_df_error);
     }

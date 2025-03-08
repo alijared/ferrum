@@ -1,0 +1,85 @@
+use crate::ast;
+use std::collections::HashSet;
+
+grammar;
+
+match {
+    r"[ \t\n\f]+" => { },
+    _
+}
+
+pub Query: ast::Query = {
+	<selector: Selector> => ast::Query {
+		selector,
+		map_functions: HashSet::new(),
+	},
+	<selector: Selector> "|" <map_functions: MapFunctionHashSet> => ast::Query {
+		selector,
+		map_functions
+	}
+};
+
+Selector: ast::Selector = {
+    "{" "}" => ast::Selector::default(),
+    "{" <filters: FilterList> "}" => {
+ 		let mut selector = ast::Selector::default();
+    	for filter in filters {
+            match filter.key.as_str() {
+                "level" => selector.level = Some(filter),
+                "message" => selector.message = Some(filter),
+                _ => selector.attributes.push(filter),
+            }
+    	}
+
+    	selector
+    }
+};
+
+FilterList: Vec<ast::Filter> = {
+    <f: Filter> => vec![f],
+    <f: Filter> "," <mut rest: FilterList> => {
+        let mut v = vec![f];
+        v.append(&mut rest);
+        v
+    }
+};
+
+Filter: ast::Filter = {
+   <k: r"(?i)[a-z._]+"> <op: ComparisonOp> <v: StringLiteral> => ast::Filter {
+		key: k.to_string(),
+		op,
+		value: v.to_string()
+    }
+};
+
+StringLiteral: String = {
+    <s:r#""([^"\\]|\\.)*""#> => s[1..s.len()-1].to_string()
+};
+
+ComparisonOp: ast::ComparisonOp = {
+    "=" => ast::ComparisonOp::Eq,
+    "!=" => ast::ComparisonOp::Neq,
+    "=~" => ast::ComparisonOp::Regex,
+    ">" => ast::ComparisonOp::Greater,
+    ">=" => ast::ComparisonOp::GreaterEq,
+    "<" => ast::ComparisonOp::Less,
+    "<=" => ast::ComparisonOp::LessEq,
+};
+
+MapFunctionHashSet: HashSet<ast::Function> = {
+    <f: MapFunction> => {
+        let mut v = HashSet::new();
+        v.insert(f);
+        v
+    },
+    <f: MapFunction> "|" <mut rest: MapFunctionHashSet> => {
+        let mut v = rest;
+        v.insert(f);
+        v
+    }
+};
+
+MapFunction: ast::Function = {
+	"count" => ast::Function::Count,
+	"json" => ast::Function::Json,
+};
