@@ -1,73 +1,27 @@
 use crate::io::{get_sql_context, tables};
-use crate::server::ServerError;
+use crate::server::http::schemas::{
+    FqlQueryParams, FqlResponse, LabelQueryParams, Labels, Log, SqlQueryParams,
+};
+use crate::server::http::ApiError;
 use axum::extract::Query;
 use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
-use axum::response::{IntoResponse, Response};
-use axum::routing::get;
-use axum::{Json, Router};
-use chrono::{DateTime, Utc};
-use chrono::{Datelike, TimeZone};
+use axum::response::IntoResponse;
+use axum::Json;
+use chrono::Datelike;
+use chrono::{DateTime, TimeZone, Utc};
 use datafusion::arrow::array::{Array, AsArray, TimestampNanosecondArray};
-use datafusion::common::{DataFusionError, ScalarValue};
+use datafusion::common::ScalarValue;
 use datafusion::dataframe::DataFrame;
+use datafusion::error::DataFusionError;
 use datafusion::logical_expr::{col, lit, lit_timestamp_nano, Expr};
 use datafusion::prelude::{get_field, regexp_match};
-use log::{error, info};
-use serde::{Deserialize, Serialize};
+use futures_util::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
-use tokio::net::TcpListener;
-use tokio_util::sync::CancellationToken;
-use tonic::codegen::tokio_stream::StreamExt;
 
-pub async fn run_server(
-    port: u32,
-    cancellation_token: CancellationToken,
-) -> Result<(), ServerError> {
-    let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
-        .await
-        .map_err(ServerError::Http)?;
-    info!("API server listening on {}", listener.local_addr().unwrap());
-
-    let app = Router::new()
-        .route("/query/fql", get(query_fql))
-        .route("/query/sql", get(query_sql));
-    axum::serve(listener, app)
-        .with_graceful_shutdown(async move {
-            cancellation_token.cancelled().await;
-            info!("Shutting down API server")
-        })
-        .await
-        .map_err(ServerError::Http)
-}
-
-#[derive(Deserialize)]
-struct FqlQueryParams {
-    query: Option<String>,
-    from: DateTime<Utc>,
-    to: DateTime<Utc>,
-    limit: Option<usize>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-enum FqlResponse {
-    Count { count: usize },
-    Data(Vec<Log>),
-}
-
-#[derive(Serialize)]
-struct Log {
-    timestamp: DateTime<Utc>,
-    level: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    message: Option<String>,
-    #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
-    json_message: Option<serde_json::Value>,
-    attributes: HashMap<String, String>,
-}
-
-async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlResponse>, ApiError> {
+pub async fn query_fql(
+    Query(params): Query<FqlQueryParams>,
+) -> Result<Json<FqlResponse>, ApiError> {
     let query = ferum_ql::parse(&params.query.unwrap_or("{}".to_string())).map_err(|e| {
         ApiError::new(
             StatusCode::BAD_REQUEST,
@@ -75,35 +29,18 @@ async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlRespo
         )
     })?;
 
-    let today_from = num_days_since_epoch(&params.from);
-    let today_to = num_days_since_epoch(&params.to);
-    let ctx = get_sql_context();
-    let df = ctx
-        .table(tables::logs::NAME)
+    let time_range = params.time_range;
+    let df = df_from_timeframe(&time_range.to, &time_range.to)
         .await
-        .and_then(|df| {
-            let from = Expr::Literal(ScalarValue::Date32(Some(today_from)));
-            if today_from != today_to {
-                return df.filter(
-                    col("day").between(from, Expr::Literal(ScalarValue::Date32(Some(today_to)))),
-                );
-            }
-            df.filter(col("day").eq(from))
-        })
-        .and_then(|df| {
-            let from = lit_timestamp_nano(params.from.timestamp_nanos_opt().unwrap());
-            let to = lit_timestamp_nano(params.to.timestamp_nanos_opt().unwrap());
-            df.filter(col("timestamp").between(from, to))
-        })
         .and_then(|df| df.drop_columns(&["day"]))
         .map_err(ApiError::from_df_error)?;
 
     let selector = query.selector;
-    let df = apply_fql_filter(df, selector.level, false)
-        .and_then(|df| apply_fql_filter(df, selector.message, false))
+    let df = apply_fql_filter(df, selector.level, None)
+        .and_then(|df| apply_fql_filter(df, selector.message, None))
         .and_then(|mut df| {
             for filter in selector.attributes {
-                df = apply_fql_filter(df, Some(filter), true)?;
+                df = apply_fql_filter(df, Some(filter), Some("attributes"))?;
             }
             Ok(df)
         })?;
@@ -187,11 +124,11 @@ async fn query_fql(Query(params): Query<FqlQueryParams>) -> Result<Json<FqlRespo
 fn apply_fql_filter(
     df: DataFrame,
     filter: Option<ferum_ql::Filter>,
-    nested: bool,
+    nested: Option<&str>,
 ) -> Result<DataFrame, ApiError> {
     if let Some(filter) = filter {
-        let mut expr = if nested {
-            get_field(col("attributes"), filter.key)
+        let mut expr = if let Some(nested_column) = nested {
+            get_field(col(nested_column), filter.key)
         } else {
             col(filter.key)
         };
@@ -212,22 +149,16 @@ fn apply_fql_filter(
     Ok(df)
 }
 
-#[derive(Deserialize)]
-struct SqlQueryParams {
-    query: String,
-}
-
-async fn query_sql(Query(params): Query<SqlQueryParams>) -> Result<impl IntoResponse, ApiError> {
+pub async fn query_sql(
+    Query(params): Query<SqlQueryParams>,
+) -> Result<impl IntoResponse, ApiError> {
     let ctx = get_sql_context();
     let df = ctx
         .sql(&params.query)
         .await
         .and_then(|df| df.drop_columns(&["day"]))
         .map_err(ApiError::from_df_error)?;
-    make_response(df).await
-}
 
-async fn make_response(df: DataFrame) -> Result<impl IntoResponse, ApiError> {
     let buf = Vec::new();
     let mut writer = arrow_json::ArrayWriter::new(buf);
     let partition_streams = df
@@ -258,47 +189,49 @@ async fn make_response(df: DataFrame) -> Result<impl IntoResponse, ApiError> {
     Ok((StatusCode::OK, headers, bytes))
 }
 
-pub struct ApiError {
-    status_code: StatusCode,
-    message: String,
+pub async fn query_labels(
+    Query(params): Query<LabelQueryParams>,
+) -> Result<Json<Labels>, ApiError> {
+    let time_range = params.time_range;
+    let df = df_from_timeframe(&time_range.to, &time_range.from)
+        .await
+        .and_then(|df| df.distinct())
+        .map_err(ApiError::from_df_error)?;
+
+    let stream = df
+        .execute_stream_partitioned()
+        .await
+        .map_err(ApiError::from_df_error)?;
+    let labels = Labels::from_stream(stream)
+        .await
+        .map_err(ApiError::from_df_error)?;
+    
+    Ok(Json(labels))
 }
 
-impl IntoResponse for ApiError {
-    fn into_response(self) -> Response {
-        if self.status_code == StatusCode::INTERNAL_SERVER_ERROR {
-            return StatusCode::INTERNAL_SERVER_ERROR.into_response();
-        }
-
-        (self.status_code, Json(json!({"error": self.message}))).into_response()
-    }
-}
-
-impl ApiError {
-    pub fn new(code: StatusCode, message: &str) -> Self {
-        Self {
-            status_code: code,
-            message: message.to_string(),
-        }
-    }
-
-    pub fn from_df_error(e: DataFusionError) -> Self {
-        match e {
-            DataFusionError::SQL(e, _) => ApiError::new(StatusCode::BAD_REQUEST, &e.to_string()),
-            DataFusionError::Plan(message) => ApiError::new(StatusCode::BAD_REQUEST, &message),
-            DataFusionError::SchemaError(e, _) => {
-                ApiError::new(StatusCode::BAD_REQUEST, &e.to_string())
+async fn df_from_timeframe(
+    to: &DateTime<Utc>,
+    from: &DateTime<Utc>,
+) -> Result<DataFrame, DataFusionError> {
+    let today_to = num_days_since_epoch(to);
+    let today_from = num_days_since_epoch(from);
+    let ctx = get_sql_context();
+    ctx.table(tables::logs::NAME)
+        .await
+        .and_then(|df| {
+            let from = Expr::Literal(ScalarValue::Date32(Some(today_from)));
+            if today_from != today_to {
+                return df.filter(
+                    col("day").between(from, Expr::Literal(ScalarValue::Date32(Some(today_to)))),
+                );
             }
-            _ => ApiError::internal_error(&e.to_string()),
-        }
-    }
-
-    pub fn internal_error(message: &str) -> Self {
-        error!("Generated unexpected internal server error: {}", message);
-        Self {
-            status_code: StatusCode::INTERNAL_SERVER_ERROR,
-            message: "".to_string(),
-        }
-    }
+            df.filter(col("day").eq(from))
+        })
+        .and_then(|df| {
+            let from = lit_timestamp_nano(from.timestamp_nanos_opt().unwrap());
+            let to = lit_timestamp_nano(to.timestamp_nanos_opt().unwrap());
+            df.filter(col("timestamp").between(from, to))
+        })
 }
 
 const UNIX_EPOCH_DAYS_FROM_CE: i32 = 719163;

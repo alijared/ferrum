@@ -9,7 +9,7 @@ const DEFAULT_DATA_DIR: &str = "/var/lib/ferrum-logs/data";
 pub struct Config {
     pub data_dir: PathBuf,
     #[serde(rename = "log_table")]
-    pub log_table_config: LogTableConfig,
+    pub log_table_config: TableConfig,
     pub server: ServerConfig,
 }
 
@@ -17,19 +17,19 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             data_dir: DEFAULT_DATA_DIR.into(),
-            log_table_config: LogTableConfig::default(),
+            log_table_config: TableConfig::default(),
             server: ServerConfig::default(),
         }
     }
 }
 
 #[derive(Debug, Deserialize)]
-pub struct LogTableConfig {
+pub struct TableConfig {
     #[serde(rename = "compaction_frequency")]
     pub compaction_frequency_seconds: u64,
 }
 
-impl Default for LogTableConfig {
+impl Default for TableConfig {
     fn default() -> Self {
         Self {
             compaction_frequency_seconds: 60,
