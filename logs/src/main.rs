@@ -5,11 +5,12 @@ use crate::config::{Config, Error};
 use crate::io::tables;
 use crate::server::{grpc, http, ServerError};
 use clap::Parser;
-use futures_util::future::try_join;
+use futures_util::try_join;
 use log::{error, info, warn};
 use std::process::exit;
+use std::time::Duration;
 use tokio::signal;
-use tokio::sync::mpsc;
+use tokio::sync::broadcast;
 use tokio_util::sync::CancellationToken;
 
 mod config;
@@ -43,7 +44,7 @@ async fn main() {
     shutdown(cancellation_token.clone());
 
     let session_ctx = io::set_session_context().await;
-    let (logs_write_tx, logs_write_rx) = mpsc::channel(4096);
+    let (logs_write_tx, logs_write_rx) = broadcast::channel(4096);
     let config = config::load(cli_args.config_file.as_str()).unwrap_or_else(|e| {
         let msg = match e {
             Error::IO(e) => format!("Failed to read config file: {}", e),
@@ -54,18 +55,34 @@ async fn main() {
         Config::default()
     });
 
-    let logs_handle = match tables::logs::register(
+    let logs_handle = match tables::logs::initialize(
         &session_ctx,
         config.data_dir.to_str().unwrap(),
+        Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
         logs_write_rx,
-        config.log_table_config,
         cancellation_token.clone(),
     )
     .await
     {
-        Ok(handle) => handle,
+        Ok(h) => h,
         Err(e) => {
-            error!("Failed to register tables: {}", e);
+            error!("Failed to initialize logs table: {}", e);
+            exit(1);
+        }
+    };
+
+    let log_attr_handle = match tables::log_attributes::initialize(
+        &session_ctx,
+        config.data_dir.to_str().unwrap(),
+        Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
+        logs_write_tx.subscribe(),
+        cancellation_token.clone(),
+    )
+    .await
+    {
+        Ok(h) => h,
+        Err(e) => {
+            error!("Failed to initialize log attributes table: {}", e);
             exit(1);
         }
     };
@@ -77,7 +94,7 @@ async fn main() {
         logs_write_tx,
         cancellation_token.clone(),
     );
-    match try_join(api_server, grpc_server).await {
+    match try_join!(api_server, grpc_server) {
         Ok(_) => {}
         Err(e) => {
             cancellation_token.cancel();
@@ -90,7 +107,13 @@ async fn main() {
         }
     }
 
-    let _ = logs_handle.await;
+    match try_join!(logs_handle, log_attr_handle) {
+        Ok(_) => {}
+        Err(e) => {
+            error!("Failed to join table futures: {}", e);
+            exit(1);
+        }
+    }
 }
 
 fn shutdown(token: CancellationToken) {
