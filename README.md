@@ -64,7 +64,8 @@ The application provides two server interfaces:
 #### HTTP API server (`logs/src/server/http/`)
 1. `/query/fql`: Ferum Query Language endpoint
 2. `/query/sql`: Direct SQL querying
-3. `/query/attributes`: Query labels based on FQL query
+3. `/query/attributes`: Query attribute keys based on FQL query
+4. `/query/attributes/{attribute}/values`: Query attribute values for a specific attribute
 
 ### Configuration management
 The system supports flexible configuration via YAML:

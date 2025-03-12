@@ -96,7 +96,7 @@ pub async fn partition_streams(
     df.execute_stream_partitioned().await
 }
 
-async fn df_from_timeframe(
+pub async fn df_from_timeframe(
     ctx: &SessionContext,
     table: &str,
     from: &DateTime<Utc>,
@@ -104,22 +104,21 @@ async fn df_from_timeframe(
 ) -> Result<DataFrame, DataFusionError> {
     let today_from = num_days_since_epoch(from);
     let today_to = num_days_since_epoch(to);
-    ctx.table(table)
-        .await
-        .and_then(|df| {
-            let from = Expr::Literal(ScalarValue::Date32(Some(today_from)));
-            if today_from != today_to {
-                return df.filter(
-                    col("day").between(from, Expr::Literal(ScalarValue::Date32(Some(today_to)))),
-                );
-            }
-            df.filter(col("day").eq(from))
-        })
-        .and_then(|df| {
-            let from = lit_timestamp_nano(from.timestamp_nanos_opt().unwrap());
-            let to = lit_timestamp_nano(to.timestamp_nanos_opt().unwrap());
-            df.filter(col("timestamp").between(from, to))
-        })
+    let timestamp_from = lit_timestamp_nano(from.timestamp_nanos_opt().unwrap());
+    let timestamp_to = lit_timestamp_nano(to.timestamp_nanos_opt().unwrap());
+
+    let day_filter = if today_from != today_to {
+        col("day").between(
+            Expr::Literal(ScalarValue::Date32(Some(today_from))),
+            Expr::Literal(ScalarValue::Date32(Some(today_to))),
+        )
+    } else {
+        col("day").eq(Expr::Literal(ScalarValue::Date32(Some(today_from))))
+    };
+
+    ctx.table(table).await.and_then(|df| {
+        df.filter(day_filter.and(col("timestamp").between(timestamp_from, timestamp_to)))
+    })
 }
 
 fn apply_optional_filter(

@@ -1,6 +1,10 @@
-use crate::server::http::schemas::{AttributeKeys, FqlQueryParams, FqlResponse, Log};
+use crate::io;
+use crate::io::tables;
+use crate::server::http::schemas::{
+    AttributeKeys, AttributeValues, FqlQueryParams, FqlResponse, Log, QueryAttributeValuesParams,
+};
 use crate::server::http::{fql, ApiError};
-use axum::extract::Query;
+use axum::extract::{Path, Query};
 use axum::Json;
 use chrono::TimeZone;
 use chrono::Utc;
@@ -8,6 +12,7 @@ use datafusion::arrow::array::{Array, AsArray, ListArray, TimestampNanosecondArr
 use datafusion::functions_aggregate::array_agg::array_agg;
 use datafusion::functions_nested;
 use datafusion::logical_expr::col;
+use datafusion::prelude::lit;
 use futures_util::StreamExt;
 use serde_json::json;
 use std::collections::HashMap;
@@ -122,10 +127,36 @@ pub async fn query_attributes(
     Query(params): Query<FqlQueryParams>,
 ) -> Result<Json<AttributeKeys>, ApiError> {
     let limit = params.limit;
-    let (_, df) = fql::select_logs(params, vec![array_agg(col("key")).alias("attributes")]).await?;
+    let column = "key";
+    let (_, df) = fql::select_logs(params, vec![array_agg(col(column)).alias(column)]).await?;
     let streams =
         fql::partition_streams(df, &["id", "level", "message", "timestamp"], limit).await?;
 
-    let attributes = AttributeKeys::try_from_streams(streams).await?;
+    let attributes = AttributeKeys::try_from_streams(streams, column).await?;
     Ok(Json(attributes))
+}
+
+pub async fn query_attribute_values(
+    Path(attribute): Path<String>,
+    Query(params): Query<QueryAttributeValuesParams>,
+) -> Result<Json<AttributeValues>, ApiError> {
+    let ctx = io::get_sql_context();
+    let time_range = params.time_range;
+    let df = fql::df_from_timeframe(
+        ctx,
+        tables::log_attributes::NAME,
+        &time_range.from,
+        &time_range.to,
+    )
+    .await
+    .and_then(|df| {
+        df.filter(col("key").eq(lit(attribute)))?
+            .select(vec![col("value")])?
+            .distinct()?
+            .limit(0, Some(params.limit.unwrap_or(1000)))
+    })?;
+
+    let streams = df.execute_stream_partitioned().await?;
+    let values = AttributeValues::try_from_streams(streams).await?;
+    Ok(Json(values))
 }
