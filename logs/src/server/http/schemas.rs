@@ -1,10 +1,10 @@
 use chrono::{DateTime, Utc};
-use datafusion::arrow::array::AsArray;
+use datafusion::arrow::array::{Array, AsArray};
 use datafusion::error::DataFusionError;
 use datafusion::execution::SendableRecordBatchStream;
 use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 #[derive(Deserialize)]
 pub struct FqlQueryParams {
@@ -16,8 +16,8 @@ pub struct FqlQueryParams {
 
 #[derive(Deserialize)]
 pub struct TimeRangeQueryParams {
-    pub to: DateTime<Utc>,
     pub from: DateTime<Utc>,
+    pub to: DateTime<Utc>,
 }
 
 #[derive(Serialize)]
@@ -43,31 +43,33 @@ pub struct SqlQueryParams {
     pub query: String,
 }
 
-#[derive(Deserialize)]
-pub struct LabelQueryParams {
-    #[serde(flatten)]
-    pub time_range: TimeRangeQueryParams,
-}
-
 #[derive(Serialize)]
-pub struct Labels {
-    #[serde(flatten)]
-    values: Vec<String>,
-}
+pub struct AttributeKeys(Vec<String>);
 
-impl Labels {
-    pub async fn from_stream(streams: Vec<SendableRecordBatchStream>) -> Result<Self, DataFusionError> {
-        let mut labels = Vec::new();
+impl AttributeKeys {
+    pub async fn try_from_streams(
+        streams: Vec<SendableRecordBatchStream>,
+    ) -> Result<Self, DataFusionError> {
+        let mut attributes = Vec::new();
+        let mut attribute_check = HashSet::new();
         for mut stream in streams {
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
-                let array = batch.column_by_name("key").unwrap().as_string::<i32>();
-                for i in 0..batch.num_rows() {
-                    labels.push(array.value(i).to_string());
+                let list = batch
+                    .column(batch.schema().index_of("attributes").unwrap())
+                    .as_list::<i32>();
+
+                let values = list.values().as_string::<i32>();
+                for i in 0..values.len() {
+                    let attribute = values.value(i).to_string();
+                    if !attribute_check.contains(&attribute) {
+                        attributes.push(attribute.clone());
+                        attribute_check.insert(attribute);
+                    }
                 }
             }
         }
 
-        Ok(Self { values: labels })
+        Ok(Self(attributes))
     }
 }

@@ -8,9 +8,11 @@ use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
+mod fql;
 mod handlers;
 mod router;
 mod schemas;
+mod sql;
 
 pub async fn run_server(
     port: u32,
@@ -36,6 +38,28 @@ pub struct ApiError {
     message: String,
 }
 
+impl From<fql::Error> for ApiError {
+    fn from(error: fql::Error) -> Self {
+        match error {
+            fql::Error::Query(s) => ApiError::new(StatusCode::BAD_REQUEST, &s),
+            fql::Error::DataFusion(e) => ApiError::from(e),
+        }
+    }
+}
+
+impl From<DataFusionError> for ApiError {
+    fn from(error: DataFusionError) -> Self {
+        match error {
+            DataFusionError::SQL(e, _) => ApiError::new(StatusCode::BAD_REQUEST, &e.to_string()),
+            DataFusionError::Plan(message) => ApiError::new(StatusCode::BAD_REQUEST, &message),
+            DataFusionError::SchemaError(e, _) => {
+                ApiError::new(StatusCode::BAD_REQUEST, &e.to_string())
+            }
+            _ => ApiError::internal_error(&error.to_string()),
+        }
+    }
+}
+
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         if self.status_code == StatusCode::INTERNAL_SERVER_ERROR {
@@ -51,17 +75,6 @@ impl ApiError {
         Self {
             status_code: code,
             message: message.to_string(),
-        }
-    }
-
-    pub fn from_df_error(e: DataFusionError) -> Self {
-        match e {
-            DataFusionError::SQL(e, _) => ApiError::new(StatusCode::BAD_REQUEST, &e.to_string()),
-            DataFusionError::Plan(message) => ApiError::new(StatusCode::BAD_REQUEST, &message),
-            DataFusionError::SchemaError(e, _) => {
-                ApiError::new(StatusCode::BAD_REQUEST, &e.to_string())
-            }
-            _ => ApiError::internal_error(&e.to_string()),
         }
     }
 

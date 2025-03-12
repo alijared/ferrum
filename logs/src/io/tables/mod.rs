@@ -6,6 +6,7 @@ use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use datafusion::catalog::TableReference;
 use datafusion::common::DEFAULT_PARQUET_EXTENSION;
+use datafusion::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
@@ -27,23 +28,24 @@ pub mod log_attributes;
 pub mod logs;
 
 #[async_trait]
-trait Table<R: MakeBatch<T>, T: Clone + Send + Sync> {
+trait Table<R: BatchWrite<T>, T: Clone + Send + Sync> {
     async fn start(&mut self, cancellation_token: CancellationToken);
 }
 
-trait MakeBatch<T: Clone + Send + Sync> {
+trait BatchWrite<T: Clone + Send + Sync> {
     fn make_batch(_data: T) -> RecordBatch {
         RecordBatch::new_empty(Arc::new(Schema::empty()))
     }
 }
 
 #[derive(Clone)]
-struct TableOptions {
+pub struct TableOptions {
     data_path: String,
     compaction_frequency: Duration,
     partition_by: Vec<(String, DataType)>,
     sort_by: Vec<SortExpr>,
     listing_options: ListingOptions,
+    parquet: TableParquetOptions,
 }
 
 impl TableOptions {
@@ -53,6 +55,7 @@ impl TableOptions {
         partition_by: Vec<(String, DataType)>,
         sort_by: Vec<SortExpr>,
         collect_stat: bool,
+        parquet: TableParquetOptions,
     ) -> Self {
         Self {
             data_path: data_path.to_string(),
@@ -63,40 +66,46 @@ impl TableOptions {
                 .with_collect_stat(collect_stat)
                 .with_table_partition_cols(partition_by)
                 .with_file_sort_order(vec![sort_by]),
+            parquet,
         }
+    }
+
+    pub fn data_path(&self) -> &str {
+        &self.data_path
+    }
+
+    pub fn parquet(&self) -> TableParquetOptions {
+        self.parquet.clone()
     }
 }
 
-impl From<TableOptions> for DataFrameWriteOptions {
-    fn from(opts: TableOptions) -> DataFrameWriteOptions {
-        let partition_by = opts.partition_by.into_iter().map(|t| t.0).collect();
+impl From<&TableOptions> for DataFrameWriteOptions {
+    fn from(opts: &TableOptions) -> DataFrameWriteOptions {
+        let partition_by = opts.partition_by.clone().into_iter().map(|t| t.0).collect();
         DataFrameWriteOptions::new()
             .with_insert_operation(InsertOp::Append)
             .with_partition_by(partition_by)
-            .with_sort_by(opts.sort_by)
+            .with_sort_by(opts.sort_by.clone())
             .with_single_file_output(true)
     }
 }
 
-async fn start_compaction(
-    name: &str,
-    opts: TableOptions,
+async fn start_compaction<R: BatchWrite<T>, T: Clone + Send + Sync>(
+    opts: Arc<TableOptions>,
     schema: Schema,
     cancellation_token: CancellationToken,
 ) -> JoinHandle<()> {
     info!("Starting compactor...");
-
-    let name = name.to_string();
+    
     tokio::spawn(async move {
-        let opts = opts.clone();
         let mut interval = tokio::time::interval(opts.compaction_frequency);
+        let opts = opts.clone();
         loop {
             let schema = schema.clone();
             tokio::select! {
                 _ = interval.tick() => {
-                    let write_opts = opts.clone().into();
                     if let Err(e)
-                        = run_compaction(&name, &opts.data_path, write_opts, schema).await {
+                        = run_compaction::<R, T>(opts.as_ref(), schema).await {
                             error!("Error compacting partitions: {}", e);
                     }
                 }
@@ -109,15 +118,13 @@ async fn start_compaction(
     })
 }
 
-async fn run_compaction(
-    name: &str,
-    data_path: &str,
-    write_opts: DataFrameWriteOptions,
+async fn run_compaction<R: BatchWrite<T>, T: Clone + Send + Sync>(
+    opts: &TableOptions,
     schema: Schema,
 ) -> Result<(), DataFusionError> {
     let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let part_name = format!("day={}", day);
-    let part_dir = Path::new(data_path).join(&part_name);
+    let part_dir = Path::new(&opts.data_path).join(&part_name);
 
     if !part_dir.exists() {
         return Ok(());
@@ -156,7 +163,7 @@ async fn run_compaction(
         .await?;
 
     let batches = df.collect().await?;
-    writer::write_batch(ctx, name, write_opts, batches).await?;
+    writer::write_batch(ctx, opts, batches).await?;
     io::clear_partition_files(files);
 
     info!("Table compaction completed");

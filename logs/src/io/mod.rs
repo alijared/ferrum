@@ -1,11 +1,11 @@
+use crate::udfs;
 use datafusion::config::{ExecutionOptions, ParquetOptions};
+use datafusion::logical_expr::ScalarUDF;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use log::error;
 use std::fs;
 use std::path::PathBuf;
-use datafusion::logical_expr::ScalarUDF;
 use tokio::sync::OnceCell;
-use crate::udfs;
 
 pub mod tables;
 pub mod writer;
@@ -18,14 +18,16 @@ pub async fn set_session_context() -> SessionContext {
         .with_collect_statistics(true)
         .with_target_partitions(num_cpus::get())
         .with_parquet_pruning(true)
+        .with_parquet_bloom_filter_pruning(true)
+        .with_parquet_page_index_pruning(true)
         .with_information_schema(true);
-    
+
     let session_opts = session_config.options_mut();
     session_opts.execution = get_execution_options();
 
     let ctx = SessionContext::new_with_config(session_config);
     ctx.register_udf(ScalarUDF::from(udfs::user::Json::new()));
-    
+
     let _ = SQL_CTX.set(ctx.clone());
     ctx
 }
@@ -42,6 +44,7 @@ pub fn get_execution_options() -> ExecutionOptions {
             reorder_filters: true,
             compression: Some("snappy".into()),
             maximum_parallel_row_group_writers: num_cpus::get(),
+            bloom_filter_on_write: true,
             ..Default::default()
         },
         keep_partition_by_columns: true,
