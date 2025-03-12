@@ -20,7 +20,7 @@ The logs system is built around several components:
     * Attributes (as a map)
     * Day partitioning
 
-2. Table management (`logs/src/io/tables/logs.rs`):
+2. Table management (`logs/src/io/tables`):
     * Uses Apache Arrow and DataFusion for 
 high-performance data processing
     * Implements compaction and periodic file management
@@ -61,9 +61,10 @@ The application provides two server interfaces:
 3. Transforms incoming logs into the internal data model
 4. High-performance log ingestion
 
-#### HTTP API server (`logs/src/server/http.rs`)
+#### HTTP API server (`logs/src/server/http/`)
 1. `/query/fql`: Ferum Query Language endpoint
 2. `/query/sql`: Direct SQL querying
+3. `/query/attributes`: Query labels based on FQL query
 
 ### Configuration management
 The system supports flexible configuration via YAML:

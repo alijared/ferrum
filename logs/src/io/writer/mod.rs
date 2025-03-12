@@ -1,7 +1,7 @@
+use crate::io::tables;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::error::ArrowError;
-use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 
@@ -15,12 +15,14 @@ pub fn combine_batches(batches: &[RecordBatch]) -> Result<RecordBatch, ArrowErro
 
 pub async fn write_batch(
     ctx: &SessionContext,
-    table_name: &str,
-    write_opts: DataFrameWriteOptions,
+    opts: &tables::TableOptions,
     batch: Vec<RecordBatch>,
 ) -> Result<(), DataFusionError> {
     let df = ctx.read_batches(batch).unwrap();
-    match df.write_table(table_name, write_opts).await {
+    match df
+        .write_parquet(opts.data_path(), opts.into(), Some(opts.parquet()))
+        .await
+    {
         Ok(_) => Ok(()),
         Err(e) => Err(e),
     }

@@ -1,8 +1,7 @@
 mod ast;
 
-use crate::ast::Query;
 use crate::grammar::QueryParser;
-pub use ast::{ComparisonOp, Filter, Function};
+pub use ast::{ComparisonOp, Filter, Function, Query};
 use lalrpop_util::lexer::Token;
 use lalrpop_util::{lalrpop_mod, ParseError};
 
@@ -69,7 +68,7 @@ mod tests {
             Ok(q) => q,
             Err(e) => panic!("{:?}", e),
         };
-        
+
         let selector = query.selector;
         assert_eq!(selector.level, None,);
         assert_eq!(

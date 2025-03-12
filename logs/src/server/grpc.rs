@@ -1,3 +1,4 @@
+use crate::io::tables;
 use crate::server::opentelemetry::collector::logs::v1::logs_service_server::{
     LogsService, LogsServiceServer,
 };
@@ -13,11 +14,11 @@ use tonic::transport::Server;
 use tonic::{async_trait, Request, Response, Status};
 
 struct LogService {
-    bus: broadcast::Sender<Vec<LogRecord>>,
+    bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
 }
 
 impl LogService {
-    pub fn new(bus: broadcast::Sender<Vec<LogRecord>>) -> Self {
+    pub fn new(bus: broadcast::Sender<Vec<(u64, LogRecord)>>) -> Self {
         Self { bus }
     }
 }
@@ -28,12 +29,14 @@ impl LogsService for LogService {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        let logs = request
-            .get_ref()
-            .resource_logs
-            .iter()
-            .flat_map(|rl| rl.scope_logs.iter().flat_map(|sl| sl.log_records.clone()))
-            .collect();
+        let mut logs = Vec::new();
+        for rl in &request.get_ref().resource_logs {
+            for sl in &rl.scope_logs {
+                for log in &sl.log_records {
+                    logs.push((tables::logs::generate_log_id(), log.clone()));
+                }
+            }
+        }
 
         if let Err(e) = self.bus.send(logs) {
             error!("Error sending record batch over channel: {}", e);
@@ -48,7 +51,7 @@ impl LogsService for LogService {
 
 pub async fn run_server(
     port: u32,
-    write_bus: broadcast::Sender<Vec<LogRecord>>,
+    write_bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
     cancellation_token: CancellationToken,
 ) -> Result<(), ServerError> {
     let addr = format!("0.0.0.0:{}", port)

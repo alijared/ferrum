@@ -5,21 +5,21 @@ pub struct Query {
     pub map_functions: HashSet<Function>,
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct Selector {
     pub level: Option<Filter>,
     pub message: Option<Filter>,
     pub attributes: Vec<Filter>,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct Filter {
     pub key: String,
     pub op: ComparisonOp,
     pub value: String,
 }
 
-#[derive(Debug, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum ComparisonOp {
     Eq,
     Neq,
