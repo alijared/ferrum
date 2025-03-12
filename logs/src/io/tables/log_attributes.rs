@@ -55,16 +55,21 @@ impl Table<Self, Vec<(u64, LogRecord)>> for LogTable {
 
 impl BatchWrite<Vec<(u64, LogRecord)>> for LogTable {
     fn make_batch(logs: Vec<(u64, LogRecord)>) -> RecordBatch {
-        let cap = logs.len();
-        let mut ids = Vec::with_capacity(cap);
-        let mut keys = Vec::with_capacity(cap);
-        let mut values = Vec::with_capacity(cap);
-        let mut timestamps = Vec::with_capacity(cap);
-        let mut days = Vec::with_capacity(cap);
+        let mut ids = Vec::new();
+        let mut keys = Vec::new();
+        let mut values = Vec::new();
+        let mut timestamps = Vec::new();
+        let mut days = Vec::new();
 
         logs.iter().for_each(|(id, l)| {
             let ts = l.time_unix_nano as i64;
             let day = (ts / 86_400_000_000_000) as i32;
+
+            ids.push(*id);
+            keys.push("level".to_string());
+            values.push(l.severity_text.clone());
+            timestamps.push(ts);
+            days.push(day);
 
             l.attributes.iter().for_each(|kv| {
                 ids.push(*id);

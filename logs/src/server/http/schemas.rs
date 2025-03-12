@@ -20,6 +20,13 @@ pub struct TimeRangeQueryParams {
     pub to: DateTime<Utc>,
 }
 
+#[derive(Deserialize)]
+pub struct QueryAttributeValuesParams {
+    #[serde(flatten)]
+    pub time_range: TimeRangeQueryParams,
+    pub limit: Option<usize>,
+}
+
 #[derive(Serialize)]
 #[serde(untagged)]
 pub enum FqlResponse {
@@ -49,6 +56,7 @@ pub struct AttributeKeys(Vec<String>);
 impl AttributeKeys {
     pub async fn try_from_streams(
         streams: Vec<SendableRecordBatchStream>,
+        column_name: &str,
     ) -> Result<Self, DataFusionError> {
         let mut attributes = Vec::new();
         let mut attribute_check = HashSet::new();
@@ -56,7 +64,7 @@ impl AttributeKeys {
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
                 let list = batch
-                    .column(batch.schema().index_of("attributes").unwrap())
+                    .column(batch.schema().index_of(column_name).unwrap())
                     .as_list::<i32>();
 
                 let values = list.values().as_string::<i32>();
@@ -71,5 +79,26 @@ impl AttributeKeys {
         }
 
         Ok(Self(attributes))
+    }
+}
+
+#[derive(Serialize)]
+pub struct AttributeValues(Vec<String>);
+
+impl AttributeValues {
+    pub async fn try_from_streams(
+        streams: Vec<SendableRecordBatchStream>,
+    ) -> Result<Self, DataFusionError> {
+        let mut values = Vec::new();
+        for mut stream in streams {
+            while let Some(batch_result) = stream.next().await {
+                let batch = batch_result?;
+                let array = batch.column(0).as_string::<i32>();
+                for i in 0..array.len() {
+                    values.push(array.value(i).to_string());
+                }
+            }
+        }
+        Ok(Self(values))
     }
 }
