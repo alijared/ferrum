@@ -7,10 +7,10 @@ pub struct QueryParams {
     pub query: String,
 }
 
-pub async fn query<T: FromStreams>(query: QueryParams) -> Result<T, query::Error> {
+pub async fn query<T: FromStreams>(params: QueryParams) -> Result<T, query::Error> {
     let ctx = get_sql_context();
     let df = ctx
-        .sql(&query.query)
+        .sql(&params.query)
         .await
         .and_then(|df| df.drop_columns(&["day"]))?;
 

@@ -1,9 +1,18 @@
 use crate::io::query;
 use crate::io::query::fql;
-use crate::server::http::loki::schemas::{AttributeKeysResponse, AttributeValuesResponse};
+use crate::server::http::loki::schemas::{
+    AttributeKeysResponse, AttributeValuesResponse, LogsResponse,
+};
 use crate::server::http::ApiError;
 use axum::extract::{Path, Query};
 use axum::Json;
+
+pub async fn query_logs(
+    Query(params): Query<fql::QueryParams>,
+) -> Result<Json<LogsResponse>, ApiError> {
+    let logs = query::logs(params).await?;
+    Ok(Json(logs))
+}
 
 pub async fn query_attribute_keys(
     Query(params): Query<fql::QueryParams>,

@@ -13,6 +13,9 @@ pub enum Error {
     #[error("Failed to parse query: {0}")]
     Query(String),
 
+    #[error("Unsupported function: {0}")]
+    UnsupportedFunction(String),
+
     #[error("{0}")]
     DataFusion(DataFusionError),
 
@@ -32,7 +35,7 @@ impl From<ArrowError> for Error {
     }
 }
 
-pub trait Log: From<usize> + FromStreams {}
+pub trait Log: TryFrom<usize> + FromStreams {}
 
 #[async_trait]
 pub trait FromStreams: Sized {

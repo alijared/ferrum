@@ -43,6 +43,7 @@ impl From<io::query::Error> for ApiError {
     fn from(error: io::query::Error) -> Self {
         match error {
             io::query::Error::Query(s) => ApiError::new(StatusCode::BAD_REQUEST, &s),
+            io::query::Error::UnsupportedFunction(s) => ApiError::new(StatusCode::BAD_REQUEST, &s),
             io::query::Error::DataFusion(e) => ApiError::from(e),
             io::query::Error::Arrow(e) => ApiError::from(e),
         }

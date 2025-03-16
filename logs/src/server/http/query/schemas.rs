@@ -17,9 +17,11 @@ pub enum LogsResponse {
 
 impl query::Log for LogsResponse {}
 
-impl From<usize> for LogsResponse {
-    fn from(count: usize) -> Self {
-        Self::Count { count }
+impl TryFrom<usize> for LogsResponse {
+    type Error = query::Error;
+
+    fn try_from(count: usize) -> Result<Self, Self::Error> {
+        Ok(Self::Count { count })
     }
 }
 

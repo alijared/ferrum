@@ -9,9 +9,9 @@ use axum::response::IntoResponse;
 use axum::Json;
 
 pub async fn query_fql(
-    Query(query): Query<fql::QueryParams>,
+    Query(params): Query<fql::QueryParams>,
 ) -> Result<Json<LogsResponse>, ApiError> {
-    let logs = query::logs(query).await?;
+    let logs = query::logs(params).await?;
     Ok(Json(logs))
 }
 

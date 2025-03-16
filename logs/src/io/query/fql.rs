@@ -1,8 +1,8 @@
 use crate::io;
 use crate::io::query::{FromStreams, Log};
 use crate::io::{query, tables};
-use chrono::Datelike;
 use chrono::{DateTime, Utc};
+use chrono::{Datelike, TimeZone};
 use datafusion::common::{JoinType, ScalarValue};
 use datafusion::dataframe::DataFrame;
 use datafusion::error::DataFusionError;
@@ -11,13 +11,16 @@ use datafusion::functions_aggregate::array_agg::array_agg;
 use datafusion::functions_nested;
 use datafusion::logical_expr::{col, lit, lit_timestamp_nano, Expr, Literal};
 use datafusion::prelude::{regexp_match, SessionContext};
-use serde::Deserialize;
+use serde::de::Visitor;
+use serde::{de, Deserialize, Deserializer};
+use std::fmt;
 
 #[derive(Deserialize)]
 pub struct QueryParams {
     pub query: Option<String>,
     #[serde(flatten)]
     pub time_range: TimeRangeQueryParams,
+    pub sort: Option<SortOrder>,
     pub limit: Option<usize>,
 }
 
@@ -30,14 +33,62 @@ pub struct QueryAttributeValuesParams {
 
 #[derive(Deserialize)]
 pub struct TimeRangeQueryParams {
-    #[serde(alias = "start")]
+    #[serde(alias = "start", deserialize_with = "deserialize_datetime")]
     pub from: DateTime<Utc>,
-    #[serde(alias = "end")]
+    #[serde(alias = "end", deserialize_with = "deserialize_datetime")]
     pub to: DateTime<Utc>,
 }
 
-pub async fn logs<T: Log>(query: QueryParams) -> Result<T, query::Error> {
+fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct DateTimeVisitor;
+
+    impl<'de> Visitor<'de> for DateTimeVisitor {
+        type Value = DateTime<Utc>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an RFC3339 string or Unix timestamp in nanoseconds")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if let Ok(ts) = value.parse::<i64>() {
+                return Ok(Utc.timestamp_nanos(ts));
+            }
+            value.parse::<DateTime<Utc>>().map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(DateTimeVisitor)
+}
+
+#[derive(Clone, Deserialize)]
+pub enum SortOrder {
+    #[serde(rename = "asc", alias = "forward")]
+    Ascending,
+    #[serde(rename = "desc", alias = "backward")]
+    Descending,
+}
+
+impl From<SortOrder> for bool {
+    fn from(order: SortOrder) -> Self {
+        match order {
+            SortOrder::Ascending => true,
+            SortOrder::Descending => false,
+        }
+    }
+}
+
+pub async fn logs<T: Log>(query: QueryParams) -> Result<T, query::Error>
+where
+    query::Error: From<<T as TryFrom<usize>>::Error>,
+{
     let limit = query.limit;
+    let sort = query.sort.clone().map(|sort| sort.into()).unwrap_or(false);
     let (query, df) = select_logs(query, vec![array_agg(col("key")), array_agg(col("value"))])
         .await
         .and_then(|(q, df)| {
@@ -52,7 +103,8 @@ pub async fn logs<T: Log>(query: QueryParams) -> Result<T, query::Error> {
         })?;
     if query.map_functions.contains(&ferum_ql::Function::Count) {
         let count = df.count().await?;
-        return Ok(T::from(count));
+        let count = T::try_from(count)?;
+        return Ok(count);
     }
 
     let streams = partition_streams(
@@ -62,6 +114,7 @@ pub async fn logs<T: Log>(query: QueryParams) -> Result<T, query::Error> {
             "array_agg(log_attributes.key)",
             "array_agg(log_attributes.value)",
         ],
+        sort,
         limit,
     )
     .await?;
@@ -72,8 +125,11 @@ pub async fn logs<T: Log>(query: QueryParams) -> Result<T, query::Error> {
 
 pub async fn attribute_keys<T: FromStreams>(query: QueryParams) -> Result<T, query::Error> {
     let limit = query.limit;
+    let sort = query.sort.clone().map(|sort| sort.into()).unwrap_or(false);
     let (_, df) = select_logs(query, vec![array_agg(col("key")).alias("key")]).await?;
-    let streams = partition_streams(df, &["id", "level", "message", "timestamp"], limit).await?;
+
+    let streams =
+        partition_streams(df, &["id", "level", "message", "timestamp"], sort, limit).await?;
     T::try_from_streams(streams, false).await
 }
 
@@ -163,11 +219,12 @@ async fn select_logs(
 async fn partition_streams(
     df: DataFrame,
     drop_columns: &[&str],
+    sort_asc: bool,
     limit: Option<usize>,
 ) -> Result<Vec<SendableRecordBatchStream>, DataFusionError> {
     let df = df.drop_columns(drop_columns).and_then(|df| {
-        df.sort(vec![col("timestamp").sort(false, false)])?
-            .limit(0, Some(limit.unwrap_or(1000)))
+        df.sort(vec![col("timestamp").sort(sort_asc, false)])?
+            .limit(0, Some(limit.unwrap_or(100)))
     })?;
 
     df.execute_stream_partitioned().await
