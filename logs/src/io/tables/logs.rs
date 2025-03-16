@@ -113,6 +113,8 @@ pub async fn initialize(
         "level".to_string(),
         ParquetColumnOptions {
             bloom_filter_enabled: Some(true),
+            bloom_filter_ndv: Some(6),
+            dictionary_enabled: Some(true),
             ..Default::default()
         },
     );
@@ -133,7 +135,7 @@ pub async fn initialize(
                 ..Default::default()
             },
             column_specific_options: column_opts,
-            key_value_metadata: Default::default(),
+            ..Default::default()
         },
     );
     let data_path = tables::register(ctx, NAME, &opts, Arc::new(SCHEMA.clone())).await?;

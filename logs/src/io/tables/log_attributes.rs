@@ -143,7 +143,7 @@ pub async fn initialize(
                 ..Default::default()
             },
             column_specific_options: column_opts,
-            key_value_metadata: Default::default(),
+            ..Default::default()
         },
     );
     let data_path = tables::register(ctx, NAME, &opts, Arc::new(SCHEMA.clone())).await?;
