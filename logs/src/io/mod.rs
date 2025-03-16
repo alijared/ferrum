@@ -1,12 +1,14 @@
 use crate::udfs;
 use datafusion::config::{ExecutionOptions, ParquetOptions};
 use datafusion::logical_expr::ScalarUDF;
+use datafusion::parquet::basic::Compression;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use log::error;
 use std::fs;
 use std::path::PathBuf;
 use tokio::sync::OnceCell;
 
+pub mod query;
 pub mod tables;
 pub mod writer;
 
@@ -42,7 +44,7 @@ pub fn get_execution_options() -> ExecutionOptions {
         parquet: ParquetOptions {
             pushdown_filters: true,
             reorder_filters: true,
-            compression: Some("snappy".into()),
+            compression: Some(Compression::SNAPPY.to_string()),
             maximum_parallel_row_group_writers: num_cpus::get(),
             bloom_filter_on_write: true,
             ..Default::default()

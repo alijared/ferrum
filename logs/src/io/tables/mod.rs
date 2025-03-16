@@ -96,7 +96,7 @@ async fn start_compaction<R: BatchWrite<T>, T: Clone + Send + Sync>(
     cancellation_token: CancellationToken,
 ) -> JoinHandle<()> {
     info!("Starting compactor...");
-    
+
     tokio::spawn(async move {
         let mut interval = tokio::time::interval(opts.compaction_frequency);
         let opts = opts.clone();

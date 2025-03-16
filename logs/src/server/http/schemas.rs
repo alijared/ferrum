@@ -1,70 +1,37 @@
-use chrono::{DateTime, Utc};
-use datafusion::arrow::array::{Array, AsArray};
-use datafusion::error::DataFusionError;
+use crate::io::query;
+use chrono::{DateTime, TimeZone, Utc};
+use datafusion::arrow::array::{
+    Array, AsArray, GenericStringArray, ListArray, MapArray, TimestampNanosecondArray,
+};
+use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::SendableRecordBatchStream;
 use futures_util::StreamExt;
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use std::collections::{HashMap, HashSet};
-
-#[derive(Deserialize)]
-pub struct FqlQueryParams {
-    pub query: Option<String>,
-    #[serde(flatten)]
-    pub time_range: TimeRangeQueryParams,
-    pub limit: Option<usize>,
-}
-
-#[derive(Deserialize)]
-pub struct TimeRangeQueryParams {
-    pub from: DateTime<Utc>,
-    pub to: DateTime<Utc>,
-}
-
-#[derive(Deserialize)]
-pub struct QueryAttributeValuesParams {
-    #[serde(flatten)]
-    pub time_range: TimeRangeQueryParams,
-    pub limit: Option<usize>,
-}
-
-#[derive(Serialize)]
-#[serde(untagged)]
-pub enum FqlResponse {
-    Count { count: usize },
-    Data(Vec<Log>),
-}
-
-#[derive(Serialize)]
-pub struct Log {
-    pub timestamp: DateTime<Utc>,
-    pub level: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
-    pub json_message: Option<serde_json::Value>,
-    pub attributes: HashMap<String, String>,
-}
-
-#[derive(Deserialize)]
-pub struct SqlQueryParams {
-    pub query: String,
-}
+use tonic::async_trait;
 
 #[derive(Serialize)]
 pub struct AttributeKeys(Vec<String>);
 
-impl AttributeKeys {
-    pub async fn try_from_streams(
+impl From<AttributeKeys> for Vec<String> {
+    fn from(values: AttributeKeys) -> Self {
+        values.0
+    }
+}
+
+#[async_trait]
+impl query::FromStreams for AttributeKeys {
+    async fn try_from_streams(
         streams: Vec<SendableRecordBatchStream>,
-        column_name: &str,
-    ) -> Result<Self, DataFusionError> {
+        _should_serialize_message: bool,
+    ) -> Result<Self, query::Error> {
         let mut attributes = Vec::new();
         let mut attribute_check = HashSet::new();
         for mut stream in streams {
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
                 let list = batch
-                    .column(batch.schema().index_of(column_name).unwrap())
+                    .column(batch.schema().index_of("key").unwrap())
                     .as_list::<i32>();
 
                 let values = list.values().as_string::<i32>();
@@ -85,10 +52,18 @@ impl AttributeKeys {
 #[derive(Serialize)]
 pub struct AttributeValues(Vec<String>);
 
-impl AttributeValues {
-    pub async fn try_from_streams(
+impl From<AttributeValues> for Vec<String> {
+    fn from(values: AttributeValues) -> Self {
+        values.0
+    }
+}
+
+#[async_trait]
+impl query::FromStreams for AttributeValues {
+    async fn try_from_streams(
         streams: Vec<SendableRecordBatchStream>,
-    ) -> Result<Self, DataFusionError> {
+        _should_serialize_message: bool,
+    ) -> Result<Self, query::Error> {
         let mut values = Vec::new();
         for mut stream in streams {
             while let Some(batch_result) = stream.next().await {
@@ -100,5 +75,106 @@ impl AttributeValues {
             }
         }
         Ok(Self(values))
+    }
+}
+
+pub struct SqlResponse(Vec<u8>);
+
+impl From<SqlResponse> for Vec<u8> {
+    fn from(response: SqlResponse) -> Self {
+        response.0
+    }
+}
+
+#[async_trait]
+impl query::FromStreams for SqlResponse {
+    async fn try_from_streams(
+        streams: Vec<SendableRecordBatchStream>,
+        _should_serialize_message: bool,
+    ) -> Result<Self, query::Error> {
+        let buf = Vec::new();
+        let mut writer = arrow_json::ArrayWriter::new(buf);
+        for mut stream in streams {
+            while let Some(batch_result) = stream.next().await {
+                let batch = batch_result?;
+                writer.write(&batch)?;
+            }
+        }
+
+        writer.finish()?;
+
+        Ok(Self(writer.into_inner()))
+    }
+}
+
+pub struct LogWithAttributesTuple<'a>(
+    (
+        &'a TimestampNanosecondArray,
+        &'a GenericStringArray<i32>,
+        &'a GenericStringArray<i32>,
+        &'a MapArray,
+    ),
+);
+
+impl LogWithAttributesTuple<'_> {
+    pub fn timestamp(&self, index: usize) -> DateTime<Utc> {
+        Utc.timestamp_nanos(self.0 .0.value(index))
+    }
+
+    pub fn level(&self, index: usize) -> &str {
+        self.0 .1.value(index)
+    }
+
+    pub fn message(&self, index: usize) -> &str {
+        self.0 .2.value(index)
+    }
+
+    pub fn attributes(&self, index: usize) -> HashMap<String, String> {
+        let array = self.0 .3.value(index);
+        let key_list = array
+            .column(0)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+        let value_list = array
+            .column(1)
+            .as_any()
+            .downcast_ref::<ListArray>()
+            .unwrap();
+
+        let mut attributes = HashMap::new();
+        for j in 0..key_list.len() {
+            let keys_ref = key_list.value(j);
+            let keys = keys_ref.as_string::<i32>();
+            let values_ref = value_list.value(j);
+            let values = values_ref.as_string::<i32>();
+
+            for k in 0..keys.len() {
+                attributes.insert(keys.value(k).to_string(), values.value(k).to_string());
+            }
+        }
+        attributes
+    }
+}
+
+impl<'a> From<&'a RecordBatch> for LogWithAttributesTuple<'a> {
+    fn from(batch: &'a RecordBatch) -> Self {
+        let arrays = (
+            batch
+                .column(batch.schema().index_of("timestamp").unwrap())
+                .as_any()
+                .downcast_ref::<TimestampNanosecondArray>()
+                .unwrap(),
+            batch
+                .column(batch.schema().index_of("level").unwrap())
+                .as_string::<i32>(),
+            batch
+                .column(batch.schema().index_of("message").unwrap())
+                .as_string::<i32>(),
+            batch
+                .column(batch.schema().index_of("attributes").unwrap())
+                .as_map(),
+        );
+        Self(arrays)
     }
 }
