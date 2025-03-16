@@ -45,7 +45,7 @@ where
 {
     struct DateTimeVisitor;
 
-    impl<'de> Visitor<'de> for DateTimeVisitor {
+    impl Visitor<'_> for DateTimeVisitor {
         type Value = DateTime<Utc>;
 
         fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
@@ -101,7 +101,7 @@ where
             )?;
             Ok((q, df))
         })?;
-    if query.map_functions.contains(&ferum_ql::Function::Count) {
+    if query.map_functions.contains(&ferrum_ql::Function::Count) {
         let count = df.count().await?;
         let count = T::try_from(count)?;
         return Ok(count);
@@ -119,7 +119,7 @@ where
     )
     .await?;
 
-    let should_serialize_message = query.map_functions.contains(&ferum_ql::Function::Json);
+    let should_serialize_message = query.map_functions.contains(&ferrum_ql::Function::Json);
     T::try_from_streams(streams, should_serialize_message).await
 }
 
@@ -160,8 +160,8 @@ pub async fn attribute_values<T: FromStreams>(
 async fn select_logs(
     params: QueryParams,
     aggr_expr: Vec<Expr>,
-) -> Result<(ferum_ql::Query, DataFrame), query::Error> {
-    let query = ferum_ql::parse(&params.query.unwrap_or("{}".to_string()))
+) -> Result<(ferrum_ql::Query, DataFrame), query::Error> {
+    let query = ferrum_ql::parse(&params.query.unwrap_or("{}".to_string()))
         .map_err(|e| query::Error::Query(e.to_string()))?;
 
     let ctx = io::get_sql_context();
@@ -184,7 +184,7 @@ async fn select_logs(
     })
     .and_then(|mut df| {
         for filter in selector.attributes {
-            df = apply_fql_filter(df, "key", ferum_ql::ComparisonOp::Eq, filter.key)
+            df = apply_fql_filter(df, "key", ferrum_ql::ComparisonOp::Eq, filter.key)
                 .and_then(|df| apply_fql_filter(df, "value", filter.op, filter.value))?;
         }
         Ok(df)
@@ -232,7 +232,7 @@ async fn partition_streams(
 
 fn apply_optional_filter(
     df: DataFrame,
-    filter: Option<ferum_ql::Filter>,
+    filter: Option<ferrum_ql::Filter>,
 ) -> Result<DataFrame, DataFusionError> {
     if let Some(f) = filter {
         return apply_fql_filter(df, &f.key, f.op, f.value);
@@ -243,18 +243,18 @@ fn apply_optional_filter(
 fn apply_fql_filter(
     df: DataFrame,
     column: &str,
-    op: ferum_ql::ComparisonOp,
+    op: ferrum_ql::ComparisonOp,
     value: impl Literal,
 ) -> Result<DataFrame, DataFusionError> {
     let expr = col(column);
     let expr = match op {
-        ferum_ql::ComparisonOp::Eq => expr.eq(lit(value)),
-        ferum_ql::ComparisonOp::Neq => expr.not_eq(lit(value)),
-        ferum_ql::ComparisonOp::Regex => regexp_match(expr, lit(value), None).is_not_null(),
-        ferum_ql::ComparisonOp::Greater => expr.gt(lit(value)),
-        ferum_ql::ComparisonOp::GreaterEq => expr.gt_eq(lit(value)),
-        ferum_ql::ComparisonOp::Less => expr.lt(lit(value)),
-        ferum_ql::ComparisonOp::LessEq => expr.lt_eq(lit(value)),
+        ferrum_ql::ComparisonOp::Eq => expr.eq(lit(value)),
+        ferrum_ql::ComparisonOp::Neq => expr.not_eq(lit(value)),
+        ferrum_ql::ComparisonOp::Regex => regexp_match(expr, lit(value), None).is_not_null(),
+        ferrum_ql::ComparisonOp::Greater => expr.gt(lit(value)),
+        ferrum_ql::ComparisonOp::GreaterEq => expr.gt_eq(lit(value)),
+        ferrum_ql::ComparisonOp::Less => expr.lt(lit(value)),
+        ferrum_ql::ComparisonOp::LessEq => expr.lt_eq(lit(value)),
     };
 
     df.filter(expr)

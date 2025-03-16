@@ -1,5 +1,5 @@
 [package]
-name = "ferum-ql"
+name = "ferrum-ql"
 version = "0.1.0"
 edition = "2021"
 
@@ -7,5 +7,11 @@ edition = "2021"
 lalrpop = "0.22.1"
 
 [dependencies]
-nom = "7.1.3"
 lalrpop-util = { version = "0.22.1", features = ["lexer"] }
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+
+[[bench]]
+name = "parse"
+harness = false
