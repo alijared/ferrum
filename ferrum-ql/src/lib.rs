@@ -93,10 +93,10 @@ mod tests {
         assert_eq!(
             query
                 .map_functions
-                .get(&ast::Function::Json)
+                .get(&Function::Json)
                 .cloned()
                 .unwrap(),
-            ast::Function::Json
+            Function::Json
         );
     }
 }
