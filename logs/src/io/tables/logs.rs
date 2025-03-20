@@ -1,7 +1,7 @@
 use crate::io::tables;
 use crate::io::tables::generic::GenericTable;
-use crate::io::tables::{convert_any_value, schema_with_fields, BatchWrite, Table, TableOptions};
-use crate::server::opentelemetry::logs::v1::LogRecord;
+use crate::io::tables::{schema_with_fields, BatchWrite, Table, TableOptions};
+use crate::server::grpc::opentelemetry::LogRecord;
 use chrono::Utc;
 use datafusion::arrow::array::{
     Date32Array, RecordBatch, StringArray, TimestampNanosecondArray, UInt64Array,
@@ -65,16 +65,11 @@ impl BatchWrite<Vec<(u64, LogRecord)>> for LogAttributeTable {
         let mut days = Vec::with_capacity(cap);
 
         logs.iter().for_each(|(id, l)| {
-            let level = l.severity_text.clone();
-            let message = l.body.clone().map(convert_any_value).unwrap_or_default();
-            let ts = l.time_unix_nano as i64;
-            let day = (ts / 86_400_000_000_000) as i32;
-
             ids.push(*id);
-            timestamps.push(ts);
-            days.push(day);
-            levels.push(level);
-            messages.push(message);
+            levels.push(l.level.clone());
+            messages.push(l.message.clone());
+            timestamps.push(l.timestamp);
+            days.push(l.day);
         });
 
         RecordBatch::try_new(

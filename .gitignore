@@ -2,3 +2,4 @@
 /target
 logs/data
 logs/config.yaml
+logs/config-node1.yaml
