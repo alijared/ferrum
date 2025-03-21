@@ -1,7 +1,7 @@
 use crate::io::tables;
 use crate::io::tables::generic::GenericTable;
-use crate::io::tables::{convert_any_value, schema_with_fields, BatchWrite, Table, TableOptions};
-use crate::server::opentelemetry::logs::v1::LogRecord;
+use crate::io::tables::{schema_with_fields, BatchWrite, Table, TableOptions};
+use crate::server::grpc::opentelemetry::LogRecord;
 use datafusion::arrow::array::{
     Date32Array, RecordBatch, StringArray, TimestampNanosecondArray, UInt64Array,
 };
@@ -62,22 +62,14 @@ impl BatchWrite<Vec<(u64, LogRecord)>> for LogTable {
         let mut days = Vec::new();
 
         logs.iter().for_each(|(id, l)| {
-            let ts = l.time_unix_nano as i64;
-            let day = (ts / 86_400_000_000_000) as i32;
-
             ids.push(*id);
-            keys.push("level".to_string());
-            values.push(l.severity_text.clone());
-            timestamps.push(ts);
-            days.push(day);
+            timestamps.push(l.timestamp);
+            days.push(l.day);
 
-            l.attributes.iter().for_each(|kv| {
-                ids.push(*id);
-                keys.push(kv.key.clone());
-                values.push(convert_any_value(kv.value.clone().unwrap_or_default()));
-                timestamps.push(ts);
-                days.push(day);
-            });
+            for (key, value) in &l.attributes {
+                keys.push(key.clone());
+                values.push(value.clone());
+            }
         });
 
         RecordBatch::try_new(

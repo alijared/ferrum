@@ -1,5 +1,5 @@
 use criterion::{criterion_group, criterion_main, Criterion};
-use ferum_ql::parse;
+use ferrum_ql::parse;
 
 fn benchmark(c: &mut Criterion) {
     c.bench_function("parse root element only", |b| b.iter(|| { 

@@ -1,12 +1,13 @@
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-use crate::config::{Config, Error};
 use crate::io::tables;
-use crate::server::{grpc, http, ServerError};
+use crate::raft::Raft;
+use crate::server::grpc::raft::raft_proto;
+use crate::server::{grpc, http};
 use clap::Parser;
 use futures_util::try_join;
-use log::{error, info, warn};
+use log::{error, info};
 use std::process::exit;
 use std::time::Duration;
 use tokio::signal;
@@ -15,6 +16,7 @@ use tokio_util::sync::CancellationToken;
 
 mod config;
 mod io;
+mod raft;
 mod server;
 mod udfs;
 
@@ -40,26 +42,36 @@ async fn main() {
         .filter_level(cli_args.log_level)
         .init();
 
+    let config = match config::load(&cli_args.config_file) {
+        Ok(c) => c,
+        Err(e) => {
+            error!("Failed to load configuration: {}", e);
+            exit(1);
+        }
+    };
+
+    let raft_server_port = config.replication.advertise_port;
+    let replica_config = config.replication;
+    let replica_timeout = replica_config.connect_timeout;
+    let replicas = replica_config.replicas.clone();
+    let (logs_write_tx, logs_write_rx) = broadcast::channel(4096);
+    let raft = match Raft::new(replica_config, logs_write_tx).await {
+        Ok(r) => r,
+        Err(e) => {
+            error!("Error creating Raft: {}", e);
+            exit(1);
+        }
+    };
+
     let cancellation_token = CancellationToken::new();
     shutdown(cancellation_token.clone());
 
     let session_ctx = io::set_session_context().await;
-    let (logs_write_tx, logs_write_rx) = broadcast::channel(4096);
-    let config = config::load(cli_args.config_file.as_str()).unwrap_or_else(|e| {
-        let msg = match e {
-            Error::IO(e) => format!("Failed to read config file: {}", e),
-            Error::Parse(e) => format!("Failed to parse config file: {}", e),
-        };
-
-        warn!("Failed to load config: {}; using defaults..", msg);
-        Config::default()
-    });
-
     let logs_handle = match tables::logs::initialize(
         &session_ctx,
         config.data_dir.to_str().unwrap(),
         Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
-        logs_write_rx,
+        logs_write_rx.resubscribe(),
         cancellation_token.clone(),
     )
     .await
@@ -75,7 +87,7 @@ async fn main() {
         &session_ctx,
         config.data_dir.to_str().unwrap(),
         Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
-        logs_write_tx.subscribe(),
+        logs_write_rx,
         cancellation_token.clone(),
     )
     .await
@@ -89,19 +101,42 @@ async fn main() {
 
     let server_config = config.server;
     let api_server = http::run_server(server_config.http.port, cancellation_token.clone());
-    let grpc_server = grpc::run_server(
+    let otel_grpc_server = grpc::run_server(
+        "OpenTelemetry",
         server_config.grpc.port,
-        logs_write_tx,
+        grpc::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer::new(
+            grpc::opentelemetry::LogService::new(raft.clone()),
+        ),
         cancellation_token.clone(),
     );
-    match try_join!(api_server, grpc_server) {
+    let raft_grpc_server = grpc::run_server(
+        "Raft",
+        raft_server_port,
+        raft_proto::raft_service_server::RaftServiceServer::new(grpc::raft::Service::new(
+            raft.clone(),
+        )),
+        cancellation_token.clone(),
+    );
+
+    let cancel = cancellation_token.clone();
+    tokio::spawn(async move {
+        if let Err(e) = raft
+            .connect_replicas(Duration::from_secs(replica_timeout), &replicas)
+            .await
+        {
+            error!("Failed to connect to replicas: {}", e);
+            cancel.cancel();
+        }
+    });
+
+    match try_join!(api_server, otel_grpc_server, raft_grpc_server) {
         Ok(_) => {}
         Err(e) => {
-            cancellation_token.cancel();
+            cancellation_token.clone().cancel();
             match e {
-                ServerError::ParseAddr(e) => error!("Failed to parse server addr: {}", e),
-                ServerError::Http(e) => error!("Error running HTTP server: {}", e),
-                ServerError::Grpc(e) => error!("Error running gRPC server: {}", e),
+                server::Error::ParseAddr(e) => error!("Failed to parse server addr: {}", e),
+                server::Error::Http(e) => error!("Error running HTTP server: {}", e),
+                server::Error::Grpc(e) => error!("Error running gRPC server: {}", e),
             }
             exit(1);
         }

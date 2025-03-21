@@ -1,0 +1,95 @@
+syntax = "proto3";
+
+package raft;
+
+service RaftService {
+  rpc AppendEntries(AppendEntriesRequest) returns (AppendEntriesResponse);
+  rpc InstallSnapshot(InstallSnapshotRequest) returns (InstallSnapshotResponse);
+  rpc Vote(VoteRequest) returns (VoteResponse);
+}
+
+message LogRecord {
+  string level = 1;
+  string message = 2;
+  map<string, string> attributes = 3;
+  int64 timestamp = 4;
+  int32 day = 5;
+}
+
+message Entry {
+  uint64 index = 1;
+  uint64 term = 2;
+  oneof payload {
+    BlankPayload blank = 3;
+    EntryNormalPayload normal = 4;
+    EntryConfigChangePayload config_change = 5;
+    EntrySnapshotPointerPayload snapshot_pointer = 6;
+  }
+}
+
+message BlankPayload {}
+
+message EntryNormalPayload {
+  uint64 id = 1;
+  LogRecord data = 2;
+}
+
+message EntryConfigChangePayload {
+  MembershipConfig membership = 1;
+}
+
+message MembershipConfig {
+  repeated uint64 members = 1;
+  repeated uint64 members_after_consensus = 2;
+}
+
+message EntrySnapshotPointerPayload {
+  string id = 1;
+  MembershipConfig membership = 2;
+}
+
+message AppendEntriesRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 prev_log_index = 3;
+  uint64 prev_log_term = 4;
+  repeated Entry entries = 5;
+  uint64 leader_commit = 6;
+}
+
+message ConflictOpt {
+  uint64 term = 1;
+  uint64 index = 2;
+}
+
+message AppendEntriesResponse {
+  uint64  term = 1;
+  bool success = 2;
+  optional ConflictOpt conflict_opt = 3;
+}
+
+message InstallSnapshotRequest {
+  uint64 term = 1;
+  uint64 leader_id = 2;
+  uint64 last_included_index = 3;
+  uint64 last_included_term = 4;
+  uint64 offset = 5;
+  bytes data = 6;
+  bool done = 7;
+}
+
+message InstallSnapshotResponse {
+  uint64 term = 1;
+}
+
+message VoteRequest {
+  uint64 term = 1;
+  uint64 candidate_id = 2;
+  uint64 last_log_index = 3;
+  uint64 last_log_term = 4;
+}
+
+message VoteResponse {
+  uint64 term = 1;
+  bool vote_granted = 2;
+}

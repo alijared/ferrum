@@ -1,7 +1,5 @@
 use crate::io;
 use crate::io::writer;
-use crate::server::opentelemetry::common::v1::any_value::Value;
-use crate::server::opentelemetry::common::v1::AnyValue;
 use datafusion::arrow::array::RecordBatch;
 use datafusion::arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
 use datafusion::catalog::TableReference;
@@ -199,20 +197,4 @@ fn schema_with_fields(schema: Schema, mut new_fields: Vec<FieldRef>) -> Schema {
     fields.append(&mut new_fields);
 
     Schema::new(fields)
-}
-
-fn convert_any_value(value: AnyValue) -> String {
-    value.value.map(convert_value).unwrap_or_default()
-}
-
-fn convert_value(value: Value) -> String {
-    match value {
-        Value::StringValue(s) => s,
-        Value::BoolValue(b) => b.to_string(),
-        Value::IntValue(i) => i.to_string(),
-        Value::DoubleValue(d) => d.to_string(),
-        Value::ArrayValue(_) => "".to_string(),
-        Value::KvlistValue(_) => "".to_string(),
-        Value::BytesValue(b) => String::from_utf8(b).unwrap_or_default(),
-    }
 }

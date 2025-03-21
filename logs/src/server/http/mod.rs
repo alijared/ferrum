@@ -1,5 +1,4 @@
-use crate::io;
-use crate::server::ServerError;
+use crate::{io, server};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
@@ -18,10 +17,10 @@ mod schemas;
 pub async fn run_server(
     port: u32,
     cancellation_token: CancellationToken,
-) -> Result<(), ServerError> {
+) -> Result<(), server::Error> {
     let listener = TcpListener::bind(format!("0.0.0.0:{}", port))
         .await
-        .map_err(ServerError::Http)?;
+        .map_err(server::Error::Http)?;
     info!("API server listening on {}", listener.local_addr().unwrap());
 
     let app = router::new();
@@ -31,7 +30,7 @@ pub async fn run_server(
             info!("Shutting down API server")
         })
         .await
-        .map_err(ServerError::Http)
+        .map_err(server::Error::Http)
 }
 
 pub struct ApiError {

@@ -13,5 +13,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         .build_server(true)
         .compile_protos(&proto_files, &[proto_path])?;
 
+    let proto_files = vec!["raft-proto/raft.proto"];
+
+    let proto_path: PathBuf = "raft-proto".into();
+    tonic_build::configure()
+        .build_server(true)
+        .compile_protos(&proto_files, &[proto_path])?;
+
     Ok(())
 }

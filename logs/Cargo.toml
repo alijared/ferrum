@@ -4,16 +4,19 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+anyhow = "1.0.97"
+async-raft = "0.6.1"
 axum = "0.8.1"
 arrow-json = "54.2.1"
-chrono = {version = "0.4.39", features = ["serde"]}
+chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
+dashmap = "7.0.0-rc2"
 env_logger = "0.11.6"
-datafusion = "45.0.0"
+datafusion = "46.0.0"
 ferrum-ql = { path = "../ferrum-ql" }
 futures-util = "0.3.31"
 jemallocator.workspace = true
-log = "0.4.25"
+log = "0.4.26"
 num_cpus = "1.16.0"
 prost = "0.13.5"
 serde = { version = "1.0.218", features = ["derive"] }
