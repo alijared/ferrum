@@ -9,10 +9,9 @@ use crate::server::grpc::opentelemetry::collector::logs::v1::{
 use crate::server::grpc::opentelemetry::common::v1::any_value::Value;
 use crate::server::grpc::opentelemetry::common::v1::AnyValue;
 use async_raft::async_trait::async_trait;
-use log::{error, info};
+use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tokio::sync::broadcast;
 use tonic::{Request, Response, Status};
 
 #[allow(clippy::all)]
@@ -79,13 +78,12 @@ impl From<&logs::v1::LogRecord> for LogRecord {
 }
 
 pub struct LogService {
-    bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
     raft: Raft,
 }
 
 impl LogService {
-    pub fn new(bus: broadcast::Sender<Vec<(u64, LogRecord)>>, raft: Raft) -> Self {
-        Self { bus, raft }
+    pub fn new(raft: Raft) -> Self {
+        Self { raft }
     }
 }
 
@@ -95,30 +93,19 @@ impl LogsService for LogService {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
-        let mut logs = Vec::new();
         for rl in &request.get_ref().resource_logs {
             for sl in &rl.scope_logs {
                 for log in &sl.log_records {
                     let (id, record) = (tables::logs::generate_log_id(), LogRecord::from(log));
-                    match self
+                    if let Err(e) = self
                         .raft
                         .write(raft::Request::new(id, record.clone()))
                         .await
                     {
-                        Ok(_) => {
-                            info!("would have written logs");
-                        },
-                        Err(e) => {
-                            error!("Unable to send replication request: {}", e);
-                        }
+                        error!("Unable to send replication request: {}", e);
                     }
                 }
             }
-        }
-
-        if let Err(e) = self.bus.send(logs) {
-            error!("Error sending record batch over channel: {}", e);
-            return Err(Status::internal("Unexpected internal error"));
         }
 
         Ok(Response::new(ExportLogsServiceResponse {

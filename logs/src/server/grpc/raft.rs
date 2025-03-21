@@ -44,6 +44,8 @@ impl RaftService for Service {
             entries,
             leader_commit: request.leader_commit,
         };
+        
+        
 
         match self.raft.append_entries(raft_request).await {
             Ok(r) => Ok(Response::new(AppendEntriesResponse {

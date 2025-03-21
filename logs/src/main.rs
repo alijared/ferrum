@@ -54,7 +54,8 @@ async fn main() {
     let replica_config = config.replication;
     let replica_timeout = replica_config.connect_timeout;
     let replicas = replica_config.replicas.clone();
-    let raft = match Raft::new(replica_config).await {
+    let (logs_write_tx, logs_write_rx) = broadcast::channel(4096);
+    let raft = match Raft::new(replica_config, logs_write_tx).await {
         Ok(r) => r,
         Err(e) => {
             error!("Error creating Raft: {}", e);
@@ -66,13 +67,11 @@ async fn main() {
     shutdown(cancellation_token.clone());
 
     let session_ctx = io::set_session_context().await;
-    let (logs_write_tx, logs_write_rx) = broadcast::channel(4096);
-
     let logs_handle = match tables::logs::initialize(
         &session_ctx,
         config.data_dir.to_str().unwrap(),
         Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
-        logs_write_rx,
+        logs_write_rx.resubscribe(),
         cancellation_token.clone(),
     )
     .await
@@ -88,7 +87,7 @@ async fn main() {
         &session_ctx,
         config.data_dir.to_str().unwrap(),
         Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
-        logs_write_tx.subscribe(),
+        logs_write_rx,
         cancellation_token.clone(),
     )
     .await
@@ -106,7 +105,7 @@ async fn main() {
         "OpenTelemetry",
         server_config.grpc.port,
         grpc::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer::new(
-            grpc::opentelemetry::LogService::new(logs_write_tx, raft.clone()),
+            grpc::opentelemetry::LogService::new(raft.clone()),
         ),
         cancellation_token.clone(),
     );

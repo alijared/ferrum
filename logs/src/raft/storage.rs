@@ -1,6 +1,7 @@
 use crate::raft;
 use crate::raft::{Request, Response};
 use crate::server::grpc::opentelemetry::LogRecord;
+use anyhow::anyhow;
 use async_raft::raft::{Entry, EntryPayload, MembershipConfig};
 use async_raft::storage::{CurrentSnapshotData, HardState, InitialState};
 use async_raft::{NodeId, RaftStorage};
@@ -8,12 +9,13 @@ use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
 use std::io::Cursor;
 use std::path::PathBuf;
-use tokio::sync::RwLock;
+use tokio::sync::{broadcast, RwLock};
 use tonic::async_trait;
 
 pub struct Store {
     id: NodeId,
     base_path: PathBuf,
+    bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
     log: RwLock<BTreeMap<u64, Entry<Request>>>,
     state_machine: RwLock<StateMachine>,
     hard_state: RwLock<Option<HardState>>,
@@ -21,10 +23,15 @@ pub struct Store {
 }
 
 impl Store {
-    pub async fn new(id: NodeId, base_path: PathBuf) -> Result<Self, raft::Error> {
+    pub async fn new(
+        id: NodeId,
+        base_path: PathBuf,
+        bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
+    ) -> Result<Self, raft::Error> {
         Ok(Self {
             id,
             base_path,
+            bus,
             log: RwLock::new(BTreeMap::new()),
             state_machine: RwLock::new(StateMachine::default()),
             hard_state: RwLock::new(None),
@@ -51,7 +58,6 @@ impl RaftStorage<Request, Response> for Store {
     type ShutdownError = raft::Error;
 
     async fn get_membership_config(&self) -> anyhow::Result<MembershipConfig> {
-        println!("get membership config");
         let log = self.log.read().await;
         let config = log.values().rev().find_map(|entry| match &entry.payload {
             EntryPayload::ConfigChange(c) => Some(c.membership.clone()),
@@ -66,8 +72,6 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn get_initial_state(&self) -> anyhow::Result<InitialState> {
-        println!("get initial state");
-
         let mut state = self.hard_state.write().await;
         match &mut *state {
             Some(inner) => {
@@ -95,13 +99,11 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn save_hard_state(&self, state: &HardState) -> anyhow::Result<()> {
-        println!("save_hard_state");
         *self.hard_state.write().await = Some(state.clone());
         Ok(())
     }
 
     async fn get_log_entries(&self, start: u64, stop: u64) -> anyhow::Result<Vec<Entry<Request>>> {
-        println!("get log entries");
         let mut entries = Vec::new();
         let log = self.log.read().await;
         for index in start..stop {
@@ -116,7 +118,6 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn delete_logs_from(&self, start: u64, stop: Option<u64>) -> anyhow::Result<()> {
-        println!("delete_logs_from");
         let mut log = self.log.write().await;
         if let Some(stop) = stop {
             for key in start..stop {
@@ -129,14 +130,12 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn append_entry_to_log(&self, entry: &Entry<Request>) -> anyhow::Result<()> {
-        println!("append_entry_to_log");
         let mut log = self.log.write().await;
         log.insert(entry.index, entry.clone());
         Ok(())
     }
 
     async fn replicate_to_log(&self, entries: &[Entry<Request>]) -> anyhow::Result<()> {
-        println!("replicate_to_log");
         for entry in entries {
             self.append_entry_to_log(entry).await?;
         }
@@ -148,7 +147,6 @@ impl RaftStorage<Request, Response> for Store {
         index: &u64,
         request: &Request,
     ) -> anyhow::Result<Response> {
-        println!("apply_entry_to_state_machine");
         let mut state_machine = self.state_machine.write().await;
         state_machine.last_applied_log = *index;
         if let Some((id, log)) = state_machine.log_request.get(&request.id) {
@@ -158,25 +156,32 @@ impl RaftStorage<Request, Response> for Store {
         let log = request.log.clone();
         let previous = state_machine
             .log_request
-            .insert(request.id, (request.id, log));
+            .insert(request.id, (request.id, log.clone()));
+
+        self.bus
+            .send(vec![(request.id, log)])
+            .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
         Ok(Response(previous))
     }
 
     async fn replicate_to_state_machine(&self, entries: &[(&u64, &Request)]) -> anyhow::Result<()> {
-        println!("replicate_to_state_machine");
-
+        let mut logs = Vec::new();
         let mut state_machine = self.state_machine.write().await;
         for (index, request) in entries {
+            logs.push((request.id, request.log.clone()));
             state_machine.last_applied_log = **index;
             state_machine
                 .log_request
                 .insert(request.id, (request.id, request.log.clone()));
         }
+
+        self.bus
+            .send(logs)
+            .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
         Ok(())
     }
 
     async fn do_log_compaction(&self) -> anyhow::Result<CurrentSnapshotData<Self::Snapshot>> {
-        println!("do_log_compaction");
         let (data, last_applied_log);
         {
             let state_machine = self.state_machine.read().await;
@@ -224,7 +229,6 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn create_snapshot(&self) -> anyhow::Result<(String, Box<Self::Snapshot>)> {
-        println!("create_snapshot");
         Ok((String::from(""), Box::new(Cursor::new(Vec::new()))))
     }
 
@@ -236,11 +240,7 @@ impl RaftStorage<Request, Response> for Store {
         id: String,
         snapshot: Box<Self::Snapshot>,
     ) -> anyhow::Result<()> {
-        println!("finalize_snapshot_installation");
-        let raw = serde_json::to_string_pretty(snapshot.get_ref().as_slice())?;
-        println!("JSON snapshot:\n{}", raw);
         let new_snapshot: Snapshot = serde_json::from_slice(snapshot.get_ref().as_slice())?;
-
         {
             let mut log = self.log.write().await;
             let membership_config = self.membership_config(index).await;
@@ -270,8 +270,6 @@ impl RaftStorage<Request, Response> for Store {
     async fn get_current_snapshot(
         &self,
     ) -> anyhow::Result<Option<CurrentSnapshotData<Self::Snapshot>>> {
-        println!("get_current_snapshot");
-
         match &*self.current_snapshot.read().await {
             Some(snapshot) => {
                 let reader = serde_json::to_vec(&snapshot)?;

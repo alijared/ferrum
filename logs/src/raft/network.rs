@@ -59,8 +59,6 @@ impl RaftNetwork<Request> for Server {
         target: NodeId,
         rpc: AppendEntriesRequest<Request>,
     ) -> anyhow::Result<AppendEntriesResponse> {
-        println!("I'm appending an entry");
-
         let mut client = self.get_client(target)?;
         let entries = map_entries(rpc.entries)?;
         let response = client
@@ -74,7 +72,7 @@ impl RaftNetwork<Request> for Server {
             })
             .await?
             .into_inner();
-
+        
         Ok(AppendEntriesResponse {
             term: response.term,
             success: response.success,
@@ -90,8 +88,6 @@ impl RaftNetwork<Request> for Server {
         target: NodeId,
         rpc: InstallSnapshotRequest,
     ) -> anyhow::Result<InstallSnapshotResponse> {
-        println!("I'm installing a snapshot");
-
         let mut client = self.get_client(target)?;
         let response = client
             .install_snapshot(raft_proto::InstallSnapshotRequest {
@@ -111,8 +107,6 @@ impl RaftNetwork<Request> for Server {
     }
 
     async fn vote(&self, target: NodeId, rpc: VoteRequest) -> anyhow::Result<VoteResponse> {
-        println!("I'm voting");
-
         let mut client = self.get_client(target)?;
         let response = client
             .vote(raft_proto::VoteRequest {

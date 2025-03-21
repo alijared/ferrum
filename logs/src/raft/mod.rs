@@ -11,6 +11,7 @@ use std::collections::HashSet;
 use std::io;
 use std::sync::Arc;
 use std::time::Duration;
+use tokio::sync::broadcast;
 use tonic::codegen::http::uri::InvalidUri;
 
 mod network;
@@ -109,14 +110,13 @@ pub struct Raft {
     network: Arc<network::Server>,
     inner: async_raft::Raft<Request, Response, network::Server, storage::Store>,
 }
-// pub struct Raft(async_raft::Raft<Request, Response, network::Server, storage::Store>);
 
 impl Raft {
-    pub async fn new(config: ReplicationConfig) -> Result<Self, Error> {
+    pub async fn new(config: ReplicationConfig, write_bus: broadcast::Sender<Vec<(u64, LogRecord)>>) -> Result<Self, Error> {
         let validated_config = config.builder_config.validate()?;
 
         let network = Arc::new(network::Server::new());
-        let storage = storage::Store::new(config.node_id, config.replication_log).await?;
+        let storage = storage::Store::new(config.node_id, config.replication_log, write_bus).await?;
         let raft = async_raft::Raft::new(
             config.node_id,
             Arc::new(validated_config),
@@ -127,9 +127,9 @@ impl Raft {
         let mut members = HashSet::new();
         members.insert(config.node_id);
 
-        // for replica in config.replicas {
-        //     members.insert(replica.node_id);
-        // }
+        for replica in config.replicas {
+            members.insert(replica.node_id);
+        }
         raft.initialize(members).await?;
 
         Ok(Self {
