@@ -1,6 +1,6 @@
-use crate::io::tables;
 use crate::io::tables::generic::GenericTable;
-use crate::io::tables::{schema_with_fields, BatchWrite, Table, TableOptions};
+use crate::io::tables::{BatchWrite, Table, TableOptions};
+use crate::io::{tables, writer};
 use crate::server::grpc::opentelemetry::LogRecord;
 use chrono::Utc;
 use datafusion::arrow::array::{
@@ -14,6 +14,7 @@ use datafusion::parquet::basic::Compression;
 use datafusion::prelude::SessionContext;
 use log::info;
 use std::collections::HashMap;
+use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
 use std::sync::{atomic, Arc, LazyLock};
 use std::time::Duration;
@@ -63,20 +64,17 @@ impl BatchWrite<Vec<(u64, LogRecord)>> for LogAttributeTable {
         let mut messages = Vec::with_capacity(cap);
         let mut timestamps = Vec::with_capacity(cap);
         let mut days = Vec::with_capacity(cap);
+        for (id, log) in logs {
+            ids.push(id);
+            levels.push(log.level);
+            messages.push(log.message);
+            timestamps.push(log.timestamp);
+            days.push(log.day);
+        }
 
-        logs.iter().for_each(|(id, l)| {
-            ids.push(*id);
-            levels.push(l.level.clone());
-            messages.push(l.message.clone());
-            timestamps.push(l.timestamp);
-            days.push(l.day);
-        });
-
-        RecordBatch::try_new(
-            Arc::new(schema_with_fields(
-                SCHEMA.clone(),
-                PARTITION_COLUMNS.clone(),
-            )),
+        writer::record_batch(
+            SCHEMA.clone(),
+            PARTITION_COLUMNS.clone(),
             vec![
                 Arc::new(UInt64Array::from(ids)),
                 Arc::new(StringArray::from(levels)),
@@ -85,13 +83,12 @@ impl BatchWrite<Vec<(u64, LogRecord)>> for LogAttributeTable {
                 Arc::new(Date32Array::from(days)),
             ],
         )
-        .unwrap()
     }
 }
 
 pub async fn initialize(
     ctx: &SessionContext,
-    data_path: &str,
+    data_path: PathBuf,
     compaction_frequency: Duration,
     bus: broadcast::Receiver<Vec<(u64, LogRecord)>>,
     cancellation_token: CancellationToken,
@@ -138,7 +135,7 @@ pub async fn initialize(
 
     info!("Starting up {} table", NAME);
 
-    let schema = schema_with_fields(SCHEMA.clone(), PARTITION_COLUMNS.clone());
+    let schema = writer::schema_with_fields(SCHEMA.clone(), PARTITION_COLUMNS.clone());
     let mut table = LogAttributeTable::new(GenericTable::new(opts, schema, bus));
 
     Ok(tokio::spawn(async move {

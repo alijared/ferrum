@@ -4,7 +4,7 @@ use async_raft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientWriteRequest, ClientWriteResponse,
     InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse,
 };
-use async_raft::{AppData, AppDataResponse, ClientWriteError, RaftError};
+use async_raft::{AppData, AppDataResponse, ClientWriteError, NodeId, RaftError};
 use log::error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
@@ -97,12 +97,6 @@ impl AppData for Request {}
 #[derive(Clone, Serialize, Deserialize)]
 pub struct Response(Option<(u64, LogRecord)>);
 
-impl Response {
-    pub fn new(id: u64, log: LogRecord) -> Self {
-        Self(Some((id, log)))
-    }
-}
-
 impl AppDataResponse for Response {}
 
 #[derive(Clone)]
@@ -112,11 +106,15 @@ pub struct Raft {
 }
 
 impl Raft {
-    pub async fn new(config: ReplicationConfig, write_bus: broadcast::Sender<Vec<(u64, LogRecord)>>) -> Result<Self, Error> {
+    pub async fn new(
+        config: ReplicationConfig,
+        write_bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
+    ) -> Result<Self, Error> {
         let validated_config = config.builder_config.validate()?;
 
-        let network = Arc::new(network::Server::new());
-        let storage = storage::Store::new(config.node_id, config.replication_log, write_bus).await?;
+        let network = Arc::new(network::Server::new(config.node_id));
+        let storage =
+            storage::Store::new(config.node_id, config.replication_log, write_bus).await?;
         let raft = async_raft::Raft::new(
             config.node_id,
             Arc::new(validated_config),
@@ -126,16 +124,26 @@ impl Raft {
 
         let mut members = HashSet::new();
         members.insert(config.node_id);
-
         for replica in config.replicas {
             members.insert(replica.node_id);
         }
-        raft.initialize(members).await?;
 
+        raft.initialize(members).await?;
         Ok(Self {
             network,
             inner: raft,
         })
+    }
+
+    pub fn node_id(&self) -> NodeId {
+        self.network.node_id()
+    }
+
+    pub async fn leader_id(&self) -> NodeId {
+        match self.inner.current_leader().await {
+            Some(id) => id,
+            None => self.node_id(),
+        }
     }
 
     pub async fn connect_replicas(

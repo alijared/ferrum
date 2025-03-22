@@ -21,14 +21,20 @@ use tonic::transport::{Channel, Uri};
 use tonic::{async_trait, transport};
 
 pub struct Server {
+    id: NodeId,
     replicas: DashMap<NodeId, RaftServiceClient<Channel>>,
 }
 
 impl Server {
-    pub fn new() -> Self {
+    pub fn new(id: NodeId) -> Self {
         Self {
+            id,
             replicas: DashMap::new(),
         }
+    }
+    
+    pub fn node_id(&self) -> NodeId {
+        self.id
     }
 
     pub async fn connect_replicas(
@@ -38,12 +44,12 @@ impl Server {
     ) -> Result<(), raft::ReplicaError> {
         for replica in replicas {
             let client = connect_replica(&replica.address, connect_timeout).await?;
-            info!("connected to replica {}", replica.address);
+            info!("Connected to replica {}", replica.address);
             self.replicas.insert(replica.node_id, client);
         }
         Ok(())
     }
-
+    
     fn get_client(&self, node_id: NodeId) -> Result<RaftServiceClient<Channel>, anyhow::Error> {
         self.replicas
             .get(&node_id)
@@ -72,7 +78,7 @@ impl RaftNetwork<Request> for Server {
             })
             .await?
             .into_inner();
-        
+
         Ok(AppendEntriesResponse {
             term: response.term,
             success: response.success,
@@ -131,9 +137,8 @@ async fn connect_replica(
 ) -> Result<RaftServiceClient<Channel>, raft::ReplicaError> {
     let uri = Uri::try_from(address)?;
     let endpoint = transport::Endpoint::from(uri.clone());
-    match endpoint.connect().await {
-        Ok(channel) => return Ok(RaftServiceClient::new(channel)),
-        Err(_) => {}
+    if let Ok(channel) = endpoint.connect().await {
+        return Ok(RaftServiceClient::new(channel));
     }
 
     let start_time = Instant::now();

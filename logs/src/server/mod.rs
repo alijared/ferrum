@@ -1,3 +1,5 @@
+use tonic::codegen::http::uri::InvalidUri;
+
 pub mod grpc;
 pub mod http;
 
@@ -11,4 +13,7 @@ pub enum Error {
 
     #[error("{0}")]
     Grpc(tonic::transport::Error),
+    
+    #[error("{0}")]
+    InvalidUri(InvalidUri)
 }

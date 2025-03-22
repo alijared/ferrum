@@ -1,7 +1,7 @@
 use crate::io;
 use crate::io::writer;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{DataType, FieldRef, Schema, SchemaRef};
+use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
 use datafusion::catalog::TableReference;
 use datafusion::common::DEFAULT_PARQUET_EXTENSION;
 use datafusion::config::TableParquetOptions;
@@ -14,7 +14,7 @@ use datafusion::logical_expr::SortExpr;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use log::{error, info};
 use std::fs;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::task::JoinHandle;
@@ -38,7 +38,7 @@ trait BatchWrite<T: Clone + Send + Sync> {
 
 #[derive(Clone)]
 pub struct TableOptions {
-    data_path: String,
+    data_path: PathBuf,
     compaction_frequency: Duration,
     partition_by: Vec<(String, DataType)>,
     sort_by: Vec<SortExpr>,
@@ -48,7 +48,7 @@ pub struct TableOptions {
 
 impl TableOptions {
     pub fn new(
-        data_path: &str,
+        data_path: PathBuf,
         compaction_frequency: Duration,
         partition_by: Vec<(String, DataType)>,
         sort_by: Vec<SortExpr>,
@@ -56,7 +56,7 @@ impl TableOptions {
         parquet: TableParquetOptions,
     ) -> Self {
         Self {
-            data_path: data_path.to_string(),
+            data_path: data_path.join("tables"),
             compaction_frequency,
             partition_by: partition_by.clone(),
             sort_by: sort_by.clone(),
@@ -68,8 +68,8 @@ impl TableOptions {
         }
     }
 
-    pub fn data_path(&self) -> &str {
-        &self.data_path
+    pub fn data_path(&self) -> PathBuf {
+        self.data_path.clone()
     }
 
     pub fn parquet(&self) -> TableParquetOptions {
@@ -173,15 +173,14 @@ async fn register(
     name: &str,
     opts: &TableOptions,
     schema: SchemaRef,
-) -> Result<String, DataFusionError> {
+) -> Result<PathBuf, DataFusionError> {
     info!("Registering {} table", name);
     let table_ref = TableReference::from(name);
-    let data_path = format!("{}/{}", opts.data_path, name);
-
+    let data_path = opts.data_path.join(name);
     fs::create_dir_all(&data_path)?;
     ctx.register_listing_table(
         table_ref,
-        data_path.clone(),
+        data_path.to_str().unwrap(),
         opts.clone().listing_options,
         Some(schema),
         None,
@@ -190,11 +189,4 @@ async fn register(
 
     info!("Registered {} table", name);
     Ok(data_path)
-}
-
-fn schema_with_fields(schema: Schema, mut new_fields: Vec<FieldRef>) -> Schema {
-    let mut fields = schema.fields().to_vec();
-    fields.append(&mut new_fields);
-
-    Schema::new(fields)
 }
