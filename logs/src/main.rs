@@ -69,7 +69,7 @@ async fn main() {
     let session_ctx = io::set_session_context().await;
     let logs_handle = match tables::logs::initialize(
         &session_ctx,
-        config.data_dir.to_str().unwrap(),
+        config.data_dir.clone(),
         Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
         logs_write_rx.resubscribe(),
         cancellation_token.clone(),
@@ -85,7 +85,7 @@ async fn main() {
 
     let log_attr_handle = match tables::log_attributes::initialize(
         &session_ctx,
-        config.data_dir.to_str().unwrap(),
+        config.data_dir,
         Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
         logs_write_rx,
         cancellation_token.clone(),
@@ -105,7 +105,7 @@ async fn main() {
         "OpenTelemetry",
         server_config.grpc.port,
         grpc::opentelemetry::collector::logs::v1::logs_service_server::LogsServiceServer::new(
-            grpc::opentelemetry::LogService::new(raft.clone()),
+            grpc::opentelemetry::LogService::new(&replicas, raft.clone()),
         ),
         cancellation_token.clone(),
     );
@@ -137,6 +137,7 @@ async fn main() {
                 server::Error::ParseAddr(e) => error!("Failed to parse server addr: {}", e),
                 server::Error::Http(e) => error!("Error running HTTP server: {}", e),
                 server::Error::Grpc(e) => error!("Error running gRPC server: {}", e),
+                _ => unreachable!(),
             }
             exit(1);
         }

@@ -103,6 +103,7 @@ impl Default for ReplicationConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ReplicaConfig {
     pub node_id: NodeId,
+    pub forward_export_address: String,
     pub address: String,
 }
 

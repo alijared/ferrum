@@ -7,14 +7,12 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
         "opentelemetry-proto/opentelemetry/proto/resource/v1/resource.proto",
         "opentelemetry-proto/opentelemetry/proto/logs/v1/logs.proto",
     ];
-
     let proto_path: PathBuf = "opentelemetry-proto".into();
     tonic_build::configure()
         .build_server(true)
         .compile_protos(&proto_files, &[proto_path])?;
 
     let proto_files = vec!["raft-proto/raft.proto"];
-
     let proto_path: PathBuf = "raft-proto".into();
     tonic_build::configure()
         .build_server(true)
