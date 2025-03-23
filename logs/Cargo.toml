@@ -12,7 +12,7 @@ chrono = { version = "0.4.39", features = ["serde"] }
 clap = { version = "4.5.31", features = ["derive"] }
 dashmap = "7.0.0-rc2"
 env_logger = "0.11.6"
-datafusion = "46.0.0"
+datafusion = "46.0.1"
 ferrum-ql = { path = "../ferrum-ql" }
 futures-util = "0.3.31"
 jemallocator.workspace = true

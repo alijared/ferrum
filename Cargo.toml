@@ -17,3 +17,10 @@ incremental = false
 
 [workspace.dependencies]
 jemallocator = "0.5.4"
+
+[build]
+rustflags = [
+    "--cfg", "tokio_unstable",
+    "-C", "target-cpu=native",
+    "-Clinker-plugin-lto", "-Clinker=clang", "-Clink-arg=-fuse-ld=lld"
+]

@@ -115,6 +115,8 @@ impl Raft {
         let network = Arc::new(network::Server::new(config.node_id));
         let storage =
             storage::Store::new(config.node_id, config.replication_log, write_bus).await?;
+        storage.initialize().await?;
+
         let raft = async_raft::Raft::new(
             config.node_id,
             Arc::new(validated_config),
