@@ -1,5 +1,6 @@
 use crate::raft;
 use crate::raft::{Request, Response};
+use crate::redb;
 use crate::server::grpc::opentelemetry::LogRecord;
 use anyhow::anyhow;
 use async_raft::raft::{Entry, EntryPayload, MembershipConfig};
@@ -15,7 +16,8 @@ use tokio::sync::{broadcast, RwLock};
 use tonic::async_trait;
 
 const HARD_STATE_PATH: &str = "hard_state.json";
-const LOG_PATH: &str = "logs";
+const LOG_PATH: &str = "logs.db";
+const LOG_TABLE: redb::Table<u64, &[u8]> = redb::Table::new("logs");
 const SNAPSHOT_PATH: &str = "snapshot.json";
 const STATE_MACHINE_PATH: &str = "state_machine.json";
 
@@ -23,6 +25,7 @@ pub struct Store {
     id: NodeId,
     base_path: PathBuf,
     bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
+    log_db: redb::Database,
     log: RwLock<BTreeMap<u64, Entry<Request>>>,
     state_machine: RwLock<StateMachine>,
     hard_state: RwLock<Option<HardState>>,
@@ -36,13 +39,13 @@ impl Store {
         bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
     ) -> Result<Self, raft::Error> {
         tokio::fs::create_dir_all(&base_path).await?;
-        let logs_path = &base_path.join(LOG_PATH);
-        tokio::fs::create_dir_all(logs_path).await?;
 
+        let log_db = redb::Database::new(base_path.join(LOG_PATH))?;
         Ok(Self {
             id,
             base_path,
             bus,
+            log_db,
             log: RwLock::new(BTreeMap::new()),
             state_machine: RwLock::new(StateMachine::default()),
             hard_state: RwLock::new(None),
@@ -68,40 +71,29 @@ impl Store {
     }
 
     async fn load_log(&self) -> Result<(), raft::Error> {
-        let log_dir = self.base_path.join(LOG_PATH);
-        let mut entries = tokio::fs::read_dir(&log_dir).await?;
-
         let mut log = self.log.write().await;
-        while let Some(entry) = entries.next_entry().await? {
-            if !entry.file_type().await?.is_file() {
-                continue;
-            }
-
-            match tokio::fs::read(entry.path()).await {
-                Ok(v) => match serde_json::from_slice::<Entry<Request>>(&v) {
-                    Ok(log_entry) => {
-                        log.insert(log_entry.index, log_entry);
+        self.log_db
+            .read_all(LOG_TABLE, |index, entry| {
+                println!("got index {}", index);
+                match serde_json::from_slice(entry) {
+                    Ok(entry) => {
+                        log.insert(index, entry);
                     }
                     Err(e) => {
-                        warn!("Error parsing log file: {}", e);
+                        warn!("Failed to deserialize log entry: {}", e);
                     }
-                },
-                Err(e) => {
-                    warn!("Error reading log file: {}", e);
-                }
-            }
-        }
-
+                };
+            })
+            .await?;
         Ok(())
     }
 
-    async fn write_log(&self, entry: &Entry<Request>) -> Result<(), io::Error> {
-        let vec = serde_json::to_vec(entry)?;
-        let path = self
-            .base_path
-            .join(LOG_PATH)
-            .join(format!("{}.json", entry.index));
-        tokio::fs::write(path, &vec).await
+    async fn write_log(&self, entry: &Entry<Request>) -> Result<(), raft::Error> {
+        let bytes = serde_json::to_vec(entry)?;
+        self.log_db
+            .insert(LOG_TABLE, entry.index, bytes.as_slice())
+            .await?;
+        Ok(())
     }
 
     async fn load_state_machine(&self) -> Result<StateMachine, raft::Error> {
@@ -241,15 +233,15 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn delete_logs_from(&self, start: u64, stop: Option<u64>) -> anyhow::Result<()> {
-        println!("Deleting logs from {} to {:?}", start, stop);
         let mut log = self.log.write().await;
-        if let Some(stop) = stop {
-            for key in start..stop {
-                log.remove(&key);
-            }
-            return Ok(());
+        let last_key =
+            stop.unwrap_or_else(|| log.last_entry().map(|le| *le.key()).unwrap_or(start));
+
+        for key in start..=last_key {
+            self.log_db.remove(LOG_TABLE, key).await?;
+            log.remove(&key);
         }
-        log.split_off(&start);
+
         Ok(())
     }
 
@@ -325,7 +317,6 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn do_log_compaction(&self) -> anyhow::Result<CurrentSnapshotData<Self::Snapshot>> {
-        println!("Doing log compaction");
         let (data, last_applied_log);
         {
             let state_machine = self.state_machine.read().await;
