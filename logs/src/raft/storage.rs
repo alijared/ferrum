@@ -1,21 +1,31 @@
 use crate::raft;
 use crate::raft::{Request, Response};
+use crate::redb;
 use crate::server::grpc::opentelemetry::LogRecord;
 use anyhow::anyhow;
 use async_raft::raft::{Entry, EntryPayload, MembershipConfig};
 use async_raft::storage::{CurrentSnapshotData, HardState, InitialState};
 use async_raft::{NodeId, RaftStorage};
+use log::warn;
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::io::Cursor;
-use std::path::PathBuf;
+use std::io;
+use std::path::{Path, PathBuf};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::sync::{broadcast, RwLock};
 use tonic::async_trait;
+
+const HARD_STATE_PATH: &str = "hard_state.json";
+const LOG_PATH: &str = "logs.db";
+const LOG_TABLE: redb::Table<u64, &[u8]> = redb::Table::new("logs");
+const SNAPSHOT_PATH: &str = "snapshot.json";
+const STATE_MACHINE_PATH: &str = "state_machine.json";
 
 pub struct Store {
     id: NodeId,
     base_path: PathBuf,
     bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
+    log_db: redb::Database,
     log: RwLock<BTreeMap<u64, Entry<Request>>>,
     state_machine: RwLock<StateMachine>,
     hard_state: RwLock<Option<HardState>>,
@@ -28,15 +38,107 @@ impl Store {
         base_path: PathBuf,
         bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
     ) -> Result<Self, raft::Error> {
+        tokio::fs::create_dir_all(&base_path).await?;
+
+        let log_db = redb::Database::new(base_path.join(LOG_PATH))?;
         Ok(Self {
             id,
             base_path,
             bus,
+            log_db,
             log: RwLock::new(BTreeMap::new()),
             state_machine: RwLock::new(StateMachine::default()),
             hard_state: RwLock::new(None),
             current_snapshot: RwLock::new(None),
         })
+    }
+
+    pub async fn initialize(&self) -> Result<(), raft::Error> {
+        self.load_log().await?;
+
+        let state_machine = self.load_state_machine().await?;
+        *self.state_machine.write().await = state_machine;
+
+        if let Some(state) = self.load_hard_state().await? {
+            self.write_hard_state(&state, false).await?;
+        }
+
+        if let Some(snapshot) = self.load_snapshot().await? {
+            self.write_snapshot(&snapshot, false).await?;
+        }
+
+        Ok(())
+    }
+
+    async fn load_log(&self) -> Result<(), raft::Error> {
+        let mut log = self.log.write().await;
+        self.log_db
+            .read_all(LOG_TABLE, |index, entry| {
+                println!("got index {}", index);
+                match serde_json::from_slice(entry) {
+                    Ok(entry) => {
+                        log.insert(index, entry);
+                    }
+                    Err(e) => {
+                        warn!("Failed to deserialize log entry: {}", e);
+                    }
+                };
+            })
+            .await?;
+        Ok(())
+    }
+
+    async fn write_log(&self, entry: &Entry<Request>) -> Result<(), raft::Error> {
+        let bytes = serde_json::to_vec(entry)?;
+        self.log_db
+            .insert(LOG_TABLE, entry.index, bytes.as_slice())
+            .await?;
+        Ok(())
+    }
+
+    async fn load_state_machine(&self) -> Result<StateMachine, raft::Error> {
+        self.load_persisted_state(STATE_MACHINE_PATH).await
+    }
+
+    async fn write_state_machine(&self, state: &StateMachine) -> Result<(), io::Error> {
+        let vec = serde_json::to_vec(state)?;
+        tokio::fs::write(&self.base_path.join(STATE_MACHINE_PATH), &vec).await
+    }
+
+    async fn load_hard_state(&self) -> Result<Option<HardState>, raft::Error> {
+        self.load_persisted_state(HARD_STATE_PATH).await
+    }
+
+    async fn write_hard_state(&self, state: &HardState, persist: bool) -> Result<(), io::Error> {
+        *self.hard_state.write().await = Some(state.clone());
+        if persist {
+            let vec = serde_json::to_vec(state)?;
+            tokio::fs::write(&self.base_path.join(HARD_STATE_PATH), &vec).await?;
+        }
+        Ok(())
+    }
+
+    async fn load_snapshot(&self) -> Result<Option<Snapshot>, raft::Error> {
+        self.load_persisted_state(SNAPSHOT_PATH).await
+    }
+
+    async fn write_snapshot(
+        &self,
+        snapshot: &Snapshot,
+        persist: bool,
+    ) -> Result<tokio::fs::File, io::Error> {
+        *self.current_snapshot.write().await = Some(snapshot.clone());
+        let path = &self.base_path.join(SNAPSHOT_PATH);
+        if persist {
+            let mut f = tokio::fs::File::create(path).await?;
+            let vec = serde_json::to_vec(snapshot)?;
+
+            f.write_all(&vec).await?;
+            f.flush().await?;
+            return Ok(f);
+        }
+
+        tokio::fs::File::open(path).await
     }
 
     async fn membership_config(&self, index: u64) -> MembershipConfig {
@@ -50,11 +152,24 @@ impl Store {
             })
             .unwrap_or_else(|| MembershipConfig::new_initial(self.id))
     }
+
+    async fn load_persisted_state<T>(&self, path: impl AsRef<Path>) -> Result<T, raft::Error>
+    where
+        T: Default + for<'de> Deserialize<'de>,
+    {
+        match tokio::fs::read(&self.base_path.join(path)).await {
+            Ok(v) => serde_json::from_slice(&v).map_err(From::from),
+            Err(e) => match e.kind() {
+                io::ErrorKind::NotFound => Ok(T::default()),
+                _ => Err(e.into()),
+            },
+        }
+    }
 }
 
 #[async_trait]
 impl RaftStorage<Request, Response> for Store {
-    type Snapshot = Cursor<Vec<u8>>;
+    type Snapshot = tokio::fs::File;
     type ShutdownError = raft::Error;
 
     async fn get_membership_config(&self) -> anyhow::Result<MembershipConfig> {
@@ -99,7 +214,7 @@ impl RaftStorage<Request, Response> for Store {
     }
 
     async fn save_hard_state(&self, state: &HardState) -> anyhow::Result<()> {
-        *self.hard_state.write().await = Some(state.clone());
+        self.write_hard_state(state, true).await?;
         Ok(())
     }
 
@@ -119,19 +234,23 @@ impl RaftStorage<Request, Response> for Store {
 
     async fn delete_logs_from(&self, start: u64, stop: Option<u64>) -> anyhow::Result<()> {
         let mut log = self.log.write().await;
-        if let Some(stop) = stop {
-            for key in start..stop {
-                log.remove(&key);
-            }
-            return Ok(());
+        let last_key =
+            stop.unwrap_or_else(|| log.last_entry().map(|le| *le.key()).unwrap_or(start));
+
+        for key in start..=last_key {
+            self.log_db.remove(LOG_TABLE, key).await?;
+            log.remove(&key);
         }
-        log.split_off(&start);
+
         Ok(())
     }
 
     async fn append_entry_to_log(&self, entry: &Entry<Request>) -> anyhow::Result<()> {
         let mut log = self.log.write().await;
         log.insert(entry.index, entry.clone());
+        drop(log);
+
+        self.write_log(entry).await?;
         Ok(())
     }
 
@@ -149,7 +268,9 @@ impl RaftStorage<Request, Response> for Store {
     ) -> anyhow::Result<Response> {
         let mut state_machine = self.state_machine.write().await;
         state_machine.last_applied_log = *index;
+
         if let Some((id, log)) = state_machine.log_request.get(&request.id) {
+            self.write_state_machine(&state_machine).await?;
             return Ok(Response(Some((*id, log.clone()))));
         }
 
@@ -157,6 +278,11 @@ impl RaftStorage<Request, Response> for Store {
         let previous = state_machine
             .log_request
             .insert(request.id, (request.id, log.clone()));
+
+        if let Err(e) = self.write_state_machine(&state_machine).await {
+            state_machine.log_request.remove(&request.id);
+            return Err(e.into());
+        }
 
         self.bus
             .send(vec![(request.id, log)])
@@ -167,12 +293,21 @@ impl RaftStorage<Request, Response> for Store {
     async fn replicate_to_state_machine(&self, entries: &[(&u64, &Request)]) -> anyhow::Result<()> {
         let mut logs = Vec::new();
         let mut state_machine = self.state_machine.write().await;
+        let original_last_applied_log = state_machine.last_applied_log;
         for (index, request) in entries {
             logs.push((request.id, request.log.clone()));
             state_machine.last_applied_log = **index;
             state_machine
                 .log_request
                 .insert(request.id, (request.id, request.log.clone()));
+        }
+
+        if let Err(e) = self.write_state_machine(&state_machine).await {
+            state_machine.last_applied_log = original_last_applied_log;
+            for (_, request) in entries {
+                state_machine.log_request.remove(&request.id);
+            }
+            return Err(e.into());
         }
 
         self.bus
@@ -190,11 +325,10 @@ impl RaftStorage<Request, Response> for Store {
         } // Release state machine read lock.
 
         let membership_config = self.membership_config(last_applied_log).await;
-        let snapshot_bytes: Vec<u8>;
+        let snapshot_file: tokio::fs::File;
         let term;
         {
             let mut log = self.log.write().await;
-            let mut current_snapshot = self.current_snapshot.write().await;
             term = log
                 .get(&last_applied_log)
                 .map(|entry| entry.term)
@@ -216,20 +350,20 @@ impl RaftStorage<Request, Response> for Store {
                 membership: membership_config.clone(),
                 data,
             };
-            snapshot_bytes = serde_json::to_vec(&snapshot)?;
-            *current_snapshot = Some(snapshot);
+            snapshot_file = self.write_snapshot(&snapshot, true).await?
         } // Release log & snapshot write locks.
 
         Ok(CurrentSnapshotData {
             term,
             index: last_applied_log,
             membership: membership_config.clone(),
-            snapshot: Box::new(Cursor::new(snapshot_bytes)),
+            snapshot: Box::new(snapshot_file),
         })
     }
 
     async fn create_snapshot(&self) -> anyhow::Result<(String, Box<Self::Snapshot>)> {
-        Ok((String::from(""), Box::new(Cursor::new(Vec::new()))))
+        let f = tokio::fs::File::create(&self.base_path.join(SNAPSHOT_PATH)).await?;
+        Ok((String::from(""), Box::new(f)))
     }
 
     async fn finalize_snapshot_installation(
@@ -238,9 +372,11 @@ impl RaftStorage<Request, Response> for Store {
         term: u64,
         delete_through: Option<u64>,
         id: String,
-        snapshot: Box<Self::Snapshot>,
+        mut snapshot: Box<Self::Snapshot>,
     ) -> anyhow::Result<()> {
-        let new_snapshot: Snapshot = serde_json::from_slice(snapshot.get_ref().as_slice())?;
+        let mut buf = Vec::new();
+        let _ = snapshot.read(&mut buf).await?;
+        let new_snapshot: Snapshot = serde_json::from_slice(&buf)?;
         {
             let mut log = self.log.write().await;
             let membership_config = self.membership_config(index).await;
@@ -250,20 +386,26 @@ impl RaftStorage<Request, Response> for Store {
                 }
                 None => log.clear(),
             }
-            log.insert(
-                index,
-                Entry::new_snapshot_pointer(index, term, id, membership_config),
-            );
+
+            let entry = Entry::new_snapshot_pointer(index, term, id, membership_config);
+            log.insert(index, entry.clone());
+            drop(log);
+            self.write_log(&entry).await?;
         }
 
         {
             let new_state_machine: StateMachine = serde_json::from_slice(&new_snapshot.data)?;
             let mut state_machine = self.state_machine.write().await;
-            *state_machine = new_state_machine;
+            if self.write_state_machine(&new_state_machine).await.is_ok() {
+                *state_machine = new_state_machine;
+            }
         }
 
         let mut current_snapshot = self.current_snapshot.write().await;
-        *current_snapshot = Some(new_snapshot);
+        *current_snapshot = Some(new_snapshot.clone());
+        drop(current_snapshot);
+
+        self.write_snapshot(&new_snapshot, true).await?;
         Ok(())
     }
 
@@ -272,12 +414,12 @@ impl RaftStorage<Request, Response> for Store {
     ) -> anyhow::Result<Option<CurrentSnapshotData<Self::Snapshot>>> {
         match &*self.current_snapshot.read().await {
             Some(snapshot) => {
-                let reader = serde_json::to_vec(&snapshot)?;
+                let f = self.write_snapshot(snapshot, true).await?;
                 Ok(Some(CurrentSnapshotData {
                     index: snapshot.index,
                     term: snapshot.term,
                     membership: snapshot.membership.clone(),
-                    snapshot: Box::new(Cursor::new(reader)),
+                    snapshot: Box::new(f),
                 }))
             }
             None => Ok(None),

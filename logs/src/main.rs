@@ -17,6 +17,7 @@ use tokio_util::sync::CancellationToken;
 mod config;
 mod io;
 mod raft;
+mod redb;
 mod server;
 mod udfs;
 

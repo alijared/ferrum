@@ -1,4 +1,5 @@
 use crate::config::{ReplicaConfig, ReplicationConfig};
+use crate::redb;
 use crate::server::grpc::opentelemetry::LogRecord;
 use async_raft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientWriteRequest, ClientWriteResponse,
@@ -23,42 +24,36 @@ pub enum Error {
     Config(async_raft::ConfigError),
 
     #[error("{0}")]
-    Initialize(async_raft::InitializeError),
+    Raft(RaftError),
 
-    #[error("{0}")]
+    #[error("Error in redb: {0}")]
+    Redb(redb::Error),
+
+    #[error("Replica error: {0}")]
     Replica(ReplicaError),
 
-    #[error("{0}")]
+    #[error("IO error: {0}")]
     Io(io::Error),
 
-    #[error("{0}")]
+    #[error("Serialization error: {0}")]
     Serde(serde_json::Error),
-}
-
-#[derive(Debug, thiserror::Error)]
-pub enum ReplicaError {
-    #[error("{0}")]
-    InvalidUri(InvalidUri),
-
-    #[error("connecting to replica timed out after {0} seconds")]
-    Timeout(u64),
-}
-
-impl From<InvalidUri> for ReplicaError {
-    fn from(err: InvalidUri) -> Self {
-        ReplicaError::InvalidUri(err)
-    }
 }
 
 impl From<async_raft::ConfigError> for Error {
     fn from(error: async_raft::ConfigError) -> Self {
-        Error::Config(error)
+        Self::Config(error)
     }
 }
 
-impl From<async_raft::InitializeError> for Error {
-    fn from(error: async_raft::InitializeError) -> Self {
-        Error::Initialize(error)
+impl From<RaftError> for Error {
+    fn from(error: RaftError) -> Self {
+        Self::Raft(error)
+    }
+}
+
+impl From<redb::Error> for Error {
+    fn from(error: redb::Error) -> Self {
+        Self::Redb(error)
     }
 }
 
@@ -80,7 +75,22 @@ impl From<serde_json::Error> for Error {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, thiserror::Error)]
+pub enum ReplicaError {
+    #[error("{0}")]
+    InvalidUri(InvalidUri),
+
+    #[error("connecting to replica timed out after {0} seconds")]
+    Timeout(u64),
+}
+
+impl From<InvalidUri> for ReplicaError {
+    fn from(err: InvalidUri) -> Self {
+        ReplicaError::InvalidUri(err)
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
     id: u64,
     log: LogRecord,
@@ -115,6 +125,8 @@ impl Raft {
         let network = Arc::new(network::Server::new(config.node_id));
         let storage =
             storage::Store::new(config.node_id, config.replication_log, write_bus).await?;
+        storage.initialize().await?;
+
         let raft = async_raft::Raft::new(
             config.node_id,
             Arc::new(validated_config),
@@ -128,11 +140,19 @@ impl Raft {
             members.insert(replica.node_id);
         }
 
-        raft.initialize(members).await?;
-        Ok(Self {
-            network,
-            inner: raft,
-        })
+        match raft.initialize(members).await {
+            Ok(_) => Ok(Self {
+                network,
+                inner: raft,
+            }),
+            Err(e) => match e {
+                async_raft::InitializeError::RaftError(e) => Err(e.into()),
+                _ => Ok(Self {
+                    network,
+                    inner: raft,
+                }),
+            },
+        }
     }
 
     pub fn node_id(&self) -> NodeId {

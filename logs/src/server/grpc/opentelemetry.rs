@@ -53,7 +53,7 @@ pub mod logs {
     }
 }
 
-#[derive(Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogRecord {
     pub level: String,
     pub message: String,
