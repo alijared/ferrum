@@ -1,6 +1,7 @@
 use crate::config::{ReplicaConfig, ReplicationConfig};
 use crate::redb;
 use crate::server::grpc::opentelemetry::LogRecord;
+use crate::server::grpc::raft::raft_proto;
 use async_raft::raft::{
     AppendEntriesRequest, AppendEntriesResponse, ClientWriteRequest, ClientWriteResponse,
     InstallSnapshotRequest, InstallSnapshotResponse, VoteRequest, VoteResponse,
@@ -91,21 +92,28 @@ impl From<InvalidUri> for ReplicaError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Request {
-    id: u64,
-    log: LogRecord,
-}
+pub struct Request(Vec<(u64, LogRecord)>);
 
 impl Request {
-    pub fn new(id: u64, log: LogRecord) -> Self {
-        Self { id, log }
+    pub fn new(records: Vec<(u64, LogRecord)>) -> Self {
+        Self(records)
+    }
+}
+
+impl From<Vec<raft_proto::Request>> for Request {
+    fn from(requests: Vec<raft_proto::Request>) -> Self {
+        let values = requests
+            .into_iter()
+            .filter_map(|r| r.record.map(|l| (r.id, l.into())))
+            .collect();
+        Self(values)
     }
 }
 
 impl AppData for Request {}
 
 #[derive(Clone, Serialize, Deserialize)]
-pub struct Response(Option<(u64, LogRecord)>);
+pub struct Response(Vec<u64>);
 
 impl AppDataResponse for Response {}
 

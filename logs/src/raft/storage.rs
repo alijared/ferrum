@@ -8,7 +8,7 @@ use async_raft::storage::{CurrentSnapshotData, HardState, InitialState};
 use async_raft::{NodeId, RaftStorage};
 use log::warn;
 use serde::{Deserialize, Serialize};
-use std::collections::{BTreeMap, HashMap};
+use std::collections::BTreeMap;
 use std::io;
 use std::path::{Path, PathBuf};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -269,25 +269,13 @@ impl RaftStorage<Request, Response> for Store {
         let mut state_machine = self.state_machine.write().await;
         state_machine.last_applied_log = *index;
 
-        if let Some((id, log)) = state_machine.log_request.get(&request.id) {
-            self.write_state_machine(&state_machine).await?;
-            return Ok(Response(Some((*id, log.clone()))));
-        }
-
-        let log = request.log.clone();
-        let previous = state_machine
-            .log_request
-            .insert(request.id, (request.id, log.clone()));
-
-        if let Err(e) = self.write_state_machine(&state_machine).await {
-            state_machine.log_request.remove(&request.id);
-            return Err(e.into());
-        }
-
+        let logs = request.clone().0;
         self.bus
-            .send(vec![(request.id, log)])
+            .send(logs.clone())
             .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
-        Ok(Response(previous))
+
+        let ids = logs.into_iter().map(|(id, _)| id).collect();
+        Ok(Response(ids))
     }
 
     async fn replicate_to_state_machine(&self, entries: &[(&u64, &Request)]) -> anyhow::Result<()> {
@@ -295,18 +283,14 @@ impl RaftStorage<Request, Response> for Store {
         let mut state_machine = self.state_machine.write().await;
         let original_last_applied_log = state_machine.last_applied_log;
         for (index, request) in entries {
-            logs.push((request.id, request.log.clone()));
+            for (id, log) in &request.0 {
+                logs.push((*id, log.clone()));
+            }
             state_machine.last_applied_log = **index;
-            state_machine
-                .log_request
-                .insert(request.id, (request.id, request.log.clone()));
         }
 
         if let Err(e) = self.write_state_machine(&state_machine).await {
             state_machine.last_applied_log = original_last_applied_log;
-            for (_, request) in entries {
-                state_machine.log_request.remove(&request.id);
-            }
             return Err(e.into());
         }
 
@@ -327,13 +311,19 @@ impl RaftStorage<Request, Response> for Store {
         let membership_config = self.membership_config(last_applied_log).await;
         let snapshot_file: tokio::fs::File;
         let term;
+
         {
             let mut log = self.log.write().await;
+            let first_key = log.first_entry().map(|fe| *fe.key()).unwrap_or(0);
             term = log
                 .get(&last_applied_log)
                 .map(|entry| entry.term)
                 .ok_or(anyhow::anyhow!("a query was received which was expecting data to be in place which does not exist in the log"))?;
-            *log = log.split_off(&last_applied_log);
+            drop(log);
+
+            self.delete_logs_from(first_key, Some(last_applied_log - 1))
+                .await?;
+            let mut log = self.log.write().await;
             log.insert(
                 last_applied_log,
                 Entry::new_snapshot_pointer(
@@ -379,17 +369,18 @@ impl RaftStorage<Request, Response> for Store {
         let new_snapshot: Snapshot = serde_json::from_slice(&buf)?;
         {
             let mut log = self.log.write().await;
-            let membership_config = self.membership_config(index).await;
-            match &delete_through {
-                Some(through) => {
-                    *log = log.split_off(&(through + 1));
-                }
-                None => log.clear(),
-            }
+            let first_index = log.first_entry().map(|fe| *fe.key()).unwrap_or(0);
+            drop(log);
 
+            let membership_config = self.membership_config(index).await;
+            let last_index = delete_through.map(Some).unwrap_or(None);
+            self.delete_logs_from(first_index, last_index).await?;
+
+            let mut log = self.log.write().await;
             let entry = Entry::new_snapshot_pointer(index, term, id, membership_config);
             log.insert(index, entry.clone());
             drop(log);
+
             self.write_log(&entry).await?;
         }
 
@@ -429,14 +420,13 @@ impl RaftStorage<Request, Response> for Store {
 
 #[derive(Default, Clone, Serialize, Deserialize)]
 pub struct StateMachine {
-    pub last_applied_log: u64,
-    pub log_request: HashMap<u64, (u64, LogRecord)>,
+    last_applied_log: u64,
 }
 
 #[derive(Serialize, Deserialize, Debug, Clone)]
 pub struct Snapshot {
-    pub index: u64,
-    pub term: u64,
-    pub membership: MembershipConfig,
-    pub data: Vec<u8>,
+    index: u64,
+    term: u64,
+    membership: MembershipConfig,
+    data: Vec<u8>,
 }

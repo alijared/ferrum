@@ -4,7 +4,7 @@ use crate::raft::Request;
 use crate::server::grpc::raft::raft_proto;
 use crate::server::grpc::raft::raft_proto::raft_service_client::RaftServiceClient;
 use crate::server::grpc::raft::raft_proto::{
-    EntryConfigChangePayload, EntryNormalPayload, EntrySnapshotPointerPayload, LogRecord,
+    EntryConfigChangePayload, EntryNormalPayload, EntrySnapshotPointerPayload,
 };
 use anyhow::anyhow;
 use async_raft::raft::{
@@ -32,7 +32,7 @@ impl Server {
             replicas: DashMap::new(),
         }
     }
-    
+
     pub fn node_id(&self) -> NodeId {
         self.id
     }
@@ -49,7 +49,7 @@ impl Server {
         }
         Ok(())
     }
-    
+
     fn get_client(&self, node_id: NodeId) -> Result<RaftServiceClient<Channel>, anyhow::Error> {
         self.replicas
             .get(&node_id)
@@ -192,18 +192,20 @@ fn map_entries(entries: Vec<Entry<Request>>) -> Result<Vec<raft_proto::Entry>, a
 }
 
 fn map_payload(payload: Request) -> EntryNormalPayload {
-    let log = payload.log;
-    let record = LogRecord {
-        level: log.level,
-        message: log.message,
-        attributes: log.attributes,
-        timestamp: log.timestamp,
-        day: log.day,
-    };
-    EntryNormalPayload {
-        id: payload.id,
-        data: Some(record),
+    let mut requests = Vec::with_capacity(payload.0.len());
+    for (id, log) in payload.0 {
+        requests.push(raft_proto::Request {
+            id,
+            record: Some(raft_proto::LogRecord {
+                level: log.level,
+                message: log.message,
+                attributes: log.attributes,
+                timestamp: log.timestamp,
+                day: log.day,
+            }),
+        });
     }
+    EntryNormalPayload { request: requests }
 }
 
 fn map_config_change(config: MembershipConfig) -> raft_proto::MembershipConfig {
