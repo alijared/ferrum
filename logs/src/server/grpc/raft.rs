@@ -1,6 +1,5 @@
 use crate::raft;
 use crate::raft::Raft;
-use crate::server::grpc::opentelemetry::LogRecord;
 use crate::server::grpc::raft::raft_proto::entry::Payload;
 use crate::server::grpc::raft::raft_proto::raft_service_server::RaftService;
 use crate::server::grpc::raft::raft_proto::{
@@ -44,7 +43,7 @@ impl RaftService for Service {
             entries,
             leader_commit: request.leader_commit,
         };
-        
+
         match self.raft.append_entries(raft_request).await {
             Ok(r) => Ok(Response::new(AppendEntriesResponse {
                 term: r.term,
@@ -117,33 +116,17 @@ fn map_entries(
 fn map_entry_payload(payload: Payload) -> Result<EntryPayload<raft::Request>, anyhow::Error> {
     match payload {
         Payload::Blank(_) => Ok(EntryPayload::Blank),
-        Payload::Normal(payload) => {
-            let log = payload.data.ok_or(anyhow!("Empty payload"))?;
-            Ok(EntryPayload::Normal(EntryNormal {
-                data: raft::Request::new(
-                    payload.id,
-                    LogRecord {
-                        level: log.level,
-                        message: log.message,
-                        attributes: log.attributes,
-                        timestamp: log.timestamp,
-                        day: log.day,
-                    },
-                ),
-            }))
-        }
+        Payload::Normal(payload) => Ok(EntryPayload::Normal(EntryNormal {
+            data: payload.request.into(),
+        })),
         Payload::ConfigChange(c) => {
-            let membership = c
-                .membership
-                .ok_or(anyhow!("Empty membership config"))?;
+            let membership = c.membership.ok_or(anyhow!("Empty membership config"))?;
 
             let membership = map_membership_config(membership)?;
             Ok(EntryPayload::ConfigChange(EntryConfigChange { membership }))
         }
         Payload::SnapshotPointer(s) => {
-            let membership = s
-                .membership
-                .ok_or(anyhow!("Empty membership config"))?;
+            let membership = s.membership.ok_or(anyhow!("Empty membership config"))?;
             let membership = map_membership_config(membership)?;
             Ok(EntryPayload::SnapshotPointer(EntrySnapshotPointer {
                 id: s.id,

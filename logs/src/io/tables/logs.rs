@@ -39,24 +39,24 @@ static SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 static PARTITION_COLUMNS: LazyLock<Vec<FieldRef>> =
     LazyLock::new(|| vec![Arc::new(Field::new("day", DataType::Date32, false))]);
 
-struct LogAttributeTable {
+struct LogTable {
     table: GenericTable<Self, Vec<(u64, LogRecord)>>,
 }
 
-impl LogAttributeTable {
+impl LogTable {
     fn new(table: GenericTable<Self, Vec<(u64, LogRecord)>>) -> Self {
         Self { table }
     }
 }
 
 #[async_trait]
-impl Table<Self, Vec<(u64, LogRecord)>> for LogAttributeTable {
+impl Table<Self, Vec<(u64, LogRecord)>> for LogTable {
     async fn start(&mut self, cancellation_token: CancellationToken) {
         self.table.start(cancellation_token).await;
     }
 }
 
-impl BatchWrite<Vec<(u64, LogRecord)>> for LogAttributeTable {
+impl BatchWrite<Vec<(u64, LogRecord)>> for LogTable {
     fn make_batch(logs: Vec<(u64, LogRecord)>) -> RecordBatch {
         let cap = logs.len();
         let mut ids = Vec::with_capacity(cap);
@@ -136,7 +136,7 @@ pub async fn initialize(
     info!("Starting up {} table", NAME);
 
     let schema = writer::schema_with_fields(SCHEMA.clone(), PARTITION_COLUMNS.clone());
-    let mut table = LogAttributeTable::new(GenericTable::new(opts, schema, bus));
+    let mut table = LogTable::new(GenericTable::new(opts, schema, bus));
 
     Ok(tokio::spawn(async move {
         table.start(cancellation_token).await;

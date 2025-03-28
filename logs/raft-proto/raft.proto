@@ -30,8 +30,12 @@ message Entry {
 message BlankPayload {}
 
 message EntryNormalPayload {
+  repeated Request request = 1;
+}
+
+message Request {
   uint64 id = 1;
-  LogRecord data = 2;
+  LogRecord record = 2;
 }
 
 message EntryConfigChangePayload {

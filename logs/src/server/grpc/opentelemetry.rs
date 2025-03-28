@@ -9,6 +9,7 @@ use crate::server::grpc::opentelemetry::collector::logs::v1::{
 };
 use crate::server::grpc::opentelemetry::common::v1::any_value::Value;
 use crate::server::grpc::opentelemetry::common::v1::AnyValue;
+use crate::server::grpc::raft::raft_proto;
 use crate::{raft, server};
 use async_raft::async_trait::async_trait;
 use async_raft::{ClientWriteError, NodeId};
@@ -82,6 +83,18 @@ impl From<&logs::v1::LogRecord> for LogRecord {
     }
 }
 
+impl From<raft_proto::LogRecord> for LogRecord {
+    fn from(record: raft_proto::LogRecord) -> Self {
+        Self {
+            level: record.level,
+            message: record.message,
+            attributes: record.attributes,
+            timestamp: record.timestamp,
+            day: record.day,
+        }
+    }
+}
+
 pub struct LogService {
     raft: Raft,
     clients: DashMap<NodeId, (String, Option<LogsServiceClient<Channel>>)>,
@@ -133,7 +146,6 @@ impl LogService {
         address: &str,
     ) -> Result<LogsServiceClient<Channel>, server::Error> {
         let uri = Uri::try_from(address).map_err(server::Error::InvalidUri)?;
-        // self.raft.get_export_address()
         let endpoint = tonic::transport::Endpoint::from(uri.clone());
         match endpoint.connect().await {
             Ok(c) => Ok(LogsServiceClient::new(c)),
@@ -153,27 +165,28 @@ impl LogsService for LogService {
             return self.forward_to_leader(request, leader_id).await;
         }
 
+        let mut logs = Vec::new();
         for rl in &request.get_ref().resource_logs {
             for sl in &rl.scope_logs {
                 for log in &sl.log_records {
-                    let (id, record) = (tables::logs::generate_log_id(), LogRecord::from(log));
-                    if let Err(e) = self
-                        .raft
-                        .write(raft::Request::new(id, record.clone()))
-                        .await
-                    {
-                        match e {
-                            ClientWriteError::RaftError(e) => {
-                                error!("Unable to send replication request: {}", e)
-                            }
-                            ClientWriteError::ForwardToLeader(_, id) => {
-                                if let Some(id) = id {
-                                    return self.forward_to_leader(request, id).await;
-                                } else {
-                                    error!("Request needs to be sent to leader, but leader couldn't be determined");
-                                }
-                            }
-                        }
+                    let record = (tables::logs::generate_log_id(), LogRecord::from(log));
+                    logs.push(record);
+                }
+            }
+        }
+
+        if let Err(e) = self.raft.write(raft::Request::new(logs)).await {
+            match e {
+                ClientWriteError::RaftError(e) => {
+                    error!("Unable to send replication request: {}", e)
+                }
+                ClientWriteError::ForwardToLeader(_, id) => {
+                    if let Some(id) = id {
+                        return self.forward_to_leader(request, id).await;
+                    } else {
+                        error!(
+                            "Request needs to be sent to leader, but leader couldn't be determined"
+                        );
                     }
                 }
             }
