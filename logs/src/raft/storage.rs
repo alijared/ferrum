@@ -6,7 +6,7 @@ use anyhow::anyhow;
 use async_raft::raft::{Entry, EntryPayload, MembershipConfig};
 use async_raft::storage::{CurrentSnapshotData, HardState, InitialState};
 use async_raft::{NodeId, RaftStorage};
-use log::warn;
+use log::{info, warn};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 use std::io;
@@ -74,7 +74,6 @@ impl Store {
         let mut log = self.log.write().await;
         self.log_db
             .read_all(LOG_TABLE, |index, entry| {
-                println!("got index {}", index);
                 match serde_json::from_slice(entry) {
                     Ok(entry) => {
                         log.insert(index, entry);
@@ -266,13 +265,13 @@ impl RaftStorage<Request, Response> for Store {
         index: &u64,
         request: &Request,
     ) -> anyhow::Result<Response> {
-        let mut state_machine = self.state_machine.write().await;
-        state_machine.last_applied_log = *index;
-
         let logs = request.clone().0;
         self.bus
             .send(logs.clone())
             .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
+
+        let mut state_machine = self.state_machine.write().await;
+        state_machine.last_applied_log = *index;
 
         let ids = logs.into_iter().map(|(id, _)| id).collect();
         Ok(Response(ids))
@@ -280,68 +279,62 @@ impl RaftStorage<Request, Response> for Store {
 
     async fn replicate_to_state_machine(&self, entries: &[(&u64, &Request)]) -> anyhow::Result<()> {
         let mut logs = Vec::new();
-        let mut state_machine = self.state_machine.write().await;
-        let original_last_applied_log = state_machine.last_applied_log;
+        let mut last_applied_log = 0;
         for (index, request) in entries {
             for (id, log) in &request.0 {
                 logs.push((*id, log.clone()));
             }
-            state_machine.last_applied_log = **index;
+            last_applied_log = **index;
         }
-
-        if let Err(e) = self.write_state_machine(&state_machine).await {
-            state_machine.last_applied_log = original_last_applied_log;
-            return Err(e.into());
-        }
-
+        
         self.bus
             .send(logs)
             .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
+
+        let mut state_machine = self.state_machine.write().await;
+        self.write_state_machine(&state_machine).await?;
+
+        state_machine.last_applied_log = last_applied_log;
         Ok(())
     }
 
     async fn do_log_compaction(&self) -> anyhow::Result<CurrentSnapshotData<Self::Snapshot>> {
-        let (data, last_applied_log);
-        {
-            let state_machine = self.state_machine.read().await;
-            data = serde_json::to_vec(&*state_machine)?;
-            last_applied_log = state_machine.last_applied_log;
-        } // Release state machine read lock.
+        info!("Compacting WAL/replication log");
+
+        let state_machine = self.state_machine.read().await;
+        let data = serde_json::to_vec(&*state_machine)?;
+        let last_applied_log = state_machine.last_applied_log;
+        drop(state_machine);
 
         let membership_config = self.membership_config(last_applied_log).await;
-        let snapshot_file: tokio::fs::File;
-        let term;
+        let mut log = self.log.write().await;
+        let first_key = log.first_entry().map(|fe| *fe.key()).unwrap_or(0);
+        let term = log
+            .get(&last_applied_log)
+            .map(|entry| entry.term)
+            .ok_or(anyhow::anyhow!("a query was received which was expecting data to be in place which does not exist in the log"))?;
 
-        {
-            let mut log = self.log.write().await;
-            let first_key = log.first_entry().map(|fe| *fe.key()).unwrap_or(0);
-            term = log
-                .get(&last_applied_log)
-                .map(|entry| entry.term)
-                .ok_or(anyhow::anyhow!("a query was received which was expecting data to be in place which does not exist in the log"))?;
-            drop(log);
-
-            self.delete_logs_from(first_key, Some(last_applied_log - 1))
-                .await?;
-            let mut log = self.log.write().await;
-            log.insert(
+        log.insert(
+            last_applied_log,
+            Entry::new_snapshot_pointer(
                 last_applied_log,
-                Entry::new_snapshot_pointer(
-                    last_applied_log,
-                    term,
-                    "".into(),
-                    membership_config.clone(),
-                ),
-            );
-
-            let snapshot = Snapshot {
-                index: last_applied_log,
                 term,
-                membership: membership_config.clone(),
-                data,
-            };
-            snapshot_file = self.write_snapshot(&snapshot, true).await?
-        } // Release log & snapshot write locks.
+                "".into(),
+                membership_config.clone(),
+            ),
+        );
+        drop(log);
+
+        let snapshot = Snapshot {
+            index: last_applied_log,
+            term,
+            membership: membership_config.clone(),
+            data,
+        };
+
+        self.delete_logs_from(first_key, Some(last_applied_log - 1))
+            .await?;
+        let snapshot_file = self.write_snapshot(&snapshot, true).await?;
 
         Ok(CurrentSnapshotData {
             term,

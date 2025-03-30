@@ -34,7 +34,7 @@ where
         .add_service(service)
         .serve_with_shutdown(addr, async move {
             cancellation_token.cancelled().await;
-            info!("Shutting down gRPC server")
+            info!("Shutting down {} gRPC server", name)
         })
         .await
         .map_err(server::Error::Grpc)

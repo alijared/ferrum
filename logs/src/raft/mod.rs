@@ -208,4 +208,9 @@ impl Raft {
     pub async fn vote(&self, request: VoteRequest) -> Result<VoteResponse, RaftError> {
         self.inner.vote(request).await
     }
+
+    pub async fn shutdown(&self) -> Result<(), anyhow::Error> {
+        self.inner.shutdown().await?;
+        Ok(())
+    }
 }

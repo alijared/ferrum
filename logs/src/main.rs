@@ -120,6 +120,7 @@ async fn main() {
     );
 
     let cancel = cancellation_token.clone();
+    let cloned_raft = raft.clone();
     tokio::spawn(async move {
         if let Err(e) = raft
             .connect_replicas(Duration::from_secs(replica_timeout), &replicas)
@@ -150,6 +151,11 @@ async fn main() {
             error!("Failed to join table futures: {}", e);
             exit(1);
         }
+    }
+
+    if let Err(e) = cloned_raft.shutdown().await {
+        error!("Failed to shutdown raft properly: {}", e);
+        exit(1);
     }
 }
 
