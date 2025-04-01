@@ -168,10 +168,7 @@ impl Raft {
     }
 
     pub async fn leader_id(&self) -> NodeId {
-        match self.inner.current_leader().await {
-            Some(id) => id,
-            None => self.node_id(),
-        }
+        self.inner.current_leader().await.unwrap_or(self.node_id())
     }
 
     pub async fn connect_replicas(
