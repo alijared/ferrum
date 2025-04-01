@@ -106,7 +106,7 @@ impl LogService {
         for replica in replicas {
             clients.insert(
                 replica.node_id,
-                (replica.forward_export_address.clone(), None),
+                (replica.otel_address.clone(), None),
             );
         }
         Self { clients, raft }
