@@ -43,8 +43,8 @@ impl Server {
         replicas: &[ReplicaConfig],
     ) -> Result<(), raft::ReplicaError> {
         for replica in replicas {
-            let client = connect_replica(&replica.address, connect_timeout).await?;
-            info!("Connected to replica {}", replica.address);
+            let client = connect_replica(&replica.raft_address, connect_timeout).await?;
+            info!("Connected to replica {}", replica.raft_address);
             self.replicas.insert(replica.node_id, client);
         }
         Ok(())

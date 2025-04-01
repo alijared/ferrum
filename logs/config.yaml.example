@@ -1,0 +1,46 @@
+# Ferrum configuration File
+# Typically located at /etc/ferrum/config.yaml
+
+data_dir: "/var/lib/ferrum/data" # directory to store persistent data
+
+# Log table configuration
+log_table:
+  compaction_frequency: 60 # how often to run file compaction (in seconds)
+
+# Server configuration
+server:
+  # gRPC server for OpenTelemetry log ingestion
+  grpc:
+    port: 4317 # default OpenTelemetry port
+
+  # HTTP API server for querying logs
+  http:
+    port: 8080 # default HTTP API port
+
+# Replication configuration (optional)
+replication:
+  cluster_name: "ferrum" # name of the cluster
+  node_id: 1 # unique ID for this node in the cluster
+  advertise_port: 9234 # port to advertise to other replicas
+  connect_timeout: 60 # timeout for connecting to other nodes (in seconds)
+  election_timeout_min: 150 # minimum election timeout, in milliseconds
+  election_timeout_max: 300 # maximum election timeout, in milliseconds
+  heartbeat_interval: 50 # interval at which leaders will send heartbeats to followers to avoid election timeout
+  max_payload_entries: 300 # maximum number of entries per payload allowed to be transmitted during replication (this does not consider that multiple logs are sent as a single entry)
+  replication_lag_threshold: 1000, # distance behind in log replication a follower must fall before it is considered "lagging"
+  snapshot_max_chunk_size: 3145728 # maximum snapshot chunk size (in bytes)
+
+  # Replication log settings
+  log:
+    data_dir: "/var/lib/ferrum/replication" # directory to store replication logs
+    max_entries: 5000 # maximum number of entries in the replication before compacting and making a snapshot
+
+  # List of other replicas in the cluster
+#  replicas:
+#    - node_id: 2
+#      otel_address: "http://replica2.example.com:4317" # address of the replica OpenTelemetry server for request forwarding
+#      raft_address: "replica2.example.com:9234" # address of the replica Raft server
+#
+#    - node_id: 3
+#      otel_address: "http://replica3.example.com:4317"
+#      raft_address: "replica3.example.com:9234"

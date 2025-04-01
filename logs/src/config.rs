@@ -1,11 +1,11 @@
-use async_raft::NodeId;
+use async_raft::{NodeId, SnapshotPolicy};
 use serde::Deserialize;
 use std::fs::File;
 use std::path::PathBuf;
 
-pub const DEFAULT_CONFIG_PATH: &str = "/etc/ferrum-logs/config.yaml";
-const DEFAULT_DATA_DIR: &str = "/var/lib/ferrum-logs/data";
-const DEFAULT_REPLICATION_DATA_DIR: &str = "/var/lib/ferrum-logs/replication";
+pub const DEFAULT_CONFIG_PATH: &str = "/etc/ferrum/config.yaml";
+const DEFAULT_DATA_DIR: &str = "/var/lib/ferrum/data";
+const DEFAULT_REPLICATION_DATA_DIR: &str = "/var/lib/ferrum/replication";
 
 #[derive(Debug, Deserialize)]
 pub struct Config {
@@ -76,9 +76,9 @@ impl Default for HttpConfig {
 #[derive(Debug, Deserialize)]
 pub struct ReplicationConfig {
     pub node_id: NodeId,
-    pub replication_log: PathBuf,
     pub advertise_port: u32,
     pub connect_timeout: u64,
+    pub log: ReplicationLogConfig,
 
     #[serde(flatten)]
     pub builder_config: async_raft::ConfigBuilder,
@@ -90,12 +90,27 @@ pub struct ReplicationConfig {
 impl Default for ReplicationConfig {
     fn default() -> Self {
         Self {
-            node_id: 0,
-            replication_log: DEFAULT_REPLICATION_DATA_DIR.into(),
+            node_id: 1,
             advertise_port: 9234,
             connect_timeout: 60,
-            builder_config: async_raft::config::Config::build("cluster".to_string()),
-            replicas: vec![],
+            log: ReplicationLogConfig::default(),
+            builder_config: async_raft::config::Config::build("ferrum".to_string()),
+            replicas: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+pub struct ReplicationLogConfig {
+    pub data_dir: PathBuf,
+    max_entries: u64,
+}
+
+impl Default for ReplicationLogConfig {
+    fn default() -> Self {
+        Self {
+            data_dir: DEFAULT_REPLICATION_DATA_DIR.into(),
+            max_entries: 5000,
         }
     }
 }
@@ -103,8 +118,8 @@ impl Default for ReplicationConfig {
 #[derive(Debug, Clone, Default, Deserialize)]
 pub struct ReplicaConfig {
     pub node_id: NodeId,
-    pub forward_export_address: String,
-    pub address: String,
+    pub otel_address: String,
+    pub raft_address: String,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -118,5 +133,9 @@ pub enum Error {
 
 pub fn load(filename: &str) -> Result<Config, Error> {
     let file = File::open(filename).map_err(Error::IO)?;
-    serde_yml::from_reader(file).map_err(Error::Parse)
+    let mut c: Config = serde_yml::from_reader(file).map_err(Error::Parse)?;
+
+    let max_entries = c.replication.log.max_entries;
+    c.replication.builder_config.snapshot_policy = Some(SnapshotPolicy::LogsSinceLast(max_entries));
+    Ok(c)
 }

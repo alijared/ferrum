@@ -1,34 +1,60 @@
 # Ferrum logs: A high-performance log management system
 
+## Table of Contents
+* [Overview](#overview)
+* [Key components](#key-components)
+  * [Log ingestion and storage](#log-ingestion-and-storage)
+  * [Query Language (ferum-ql or fql).](#query-language-ferum-ql-or-fql-)
+    * [Key Design Features:](#key-design-features)
+  * [Servers](#servers)
+    * [OpenTelemetry gRPC server](#opentelemetry-grpc-server)
+    * [Internal gRPC server](#internal-grpc-server)
+    * [HTTP API server](#http-api-server)
+  * [Configuration management](#configuration-management)
+* [Performance Considerations](#performance-considerations)
+* [Deployment and Runtime](#deployment-and-runtime)
+* [Roadmap](#roadmap)
+  * [In progress](#in-progress)
+  * [Planned (short term)](#planned-short-term)
+  * [Planned (long term)](#planned-long-term)
+
 ## Overview
 
 Ferrum is a sophisticated log management system built in Rust, designed to handle log ingestion from opentelemetry, 
 storage, querying, and 
 processing using modern data processing techniques. The project consists of two main Rust crates: ferum-ql 
 (a query language parser) and logs (the main log management application).
- 
+
+## General features
+
+- Custom query language (see [FQL](#query-language-ferum-ql-or-fql-) and the [HTTP API](#http-api-server))
+- SQL query support (see [HTTP API](#http-api-server))
+- Replication with WAL and multi-node support (via [Raft](https://raft.github.io/))
+- File compaction (configurable frequency)
+- OpenTelemetry logs compatible gRPC server (see [OpenTelemetry gRPC server](#opentelemetry-grpc-server))
+- HTTP for querying data (see [HTTP API](#http-api-server))
+
 ## Key components
 
 ### Log ingestion and storage
 The logs system is built around several components:
 
-1. Data model. Logs are stored with a rich schema including:
-
+1. Data model. Logs are stored with a rich schema including
     * Timestamp (nanosecond precision)
     * Log level
     * Message
     * Attributes (as a map)
     * Day partitioning
 
-2. Table management (`logs/src/io/tables`):
+2. Table management
     * Uses Apache Arrow and DataFusion for 
 high-performance data processing
     * Implements compaction and periodic file management
     * Enables efficient querying and storage of log data using parquet
 
-### Query Language (ferum-ql or fql). 
-Located in ferum-ql/src/lib.rs, this is a custom query language parser using the 
-nom parsing library. It allows users to:
+### Query language (ferum-ql or fql). 
+Located in ferum-ql crate, this is a custom query language parser build with
+[LALRPOP](https://github.com/lalrpop/lalrpop) . It allows users to:
 
 * Filter logs by level, message, and custom attributes
 * Apply operations like equality, inequality, and regex matching
@@ -53,25 +79,34 @@ This query would:
 * Function extensions (count, JSON conversion for message fields)
 
 ### Servers
-The application provides two server interfaces:
+The application provides three server interfaces:
 
-#### gRPC server (`logs/src/server/grpc.rs`)
+#### OpenTelemetry gRPC server
+
 1. Implements the OpenTelemetry `LogsService`
 2. Receives log entries from distributed systems
 3. Transforms incoming logs into the internal data model
 4. High-performance log ingestion
 
-#### HTTP API server (`logs/src/server/http/`)
+#### Internal gRPC server
+Handles replication and internode communication
+
+#### HTTP API server
+External API for querying data with the following endpoints:
+
 1. `/query/fql`: Ferum Query Language endpoint
 2. `/query/sql`: Direct SQL querying
 3. `/query/attributes`: Query attribute keys based on FQL query
-4. `/query/attributes/{attribute}/values`: Query attribute values for a specific attribute
+4. `/query/attribute/{attribute}/values`: Query attribute values for a specific attribute
 
 ### Configuration management
 The system supports flexible configuration via YAML:
 * Data directory configuration
 * Log table settings (e.g., compaction frequency)
 * Server port configurations
+* Replication settings
+
+See [example config](./logs/config.yaml.example) for details.
 
 ## Performance Considerations
 
@@ -87,9 +122,22 @@ The system supports flexible configuration via YAML:
 * Environment-aware configuration loading
 * Handles system signals (SIGTERM, CTRL+C)
 
-## Example Workflow
+## Roadmap
 
-1. A distributed system sends logs via gRPC
-2. Logs are parsed and stored efficiently
-3. Users can query logs using Ferum Query Language or standard SQL
-4. Results can be returned as counts or detailed log entries based on filters
+### In progress
+
+- [ ] S3 storage backend
+- [ ] Improve compaction strategy for better disk usage
+- [ ] Docker support
+
+### Planned short-term
+
+- [ ] Distributed queries on multi-node setups
+- [ ] Refactor into multiple crates for better benchmarking and testing
+- [ ] Add functions to FQL (sum, rate etc.)
+
+### Planned (long-term)
+
+- [ ] Kubernetes operator
+- [ ] Data retention policies and TTL's
+- [ ] Query caching for improved performance
