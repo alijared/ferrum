@@ -262,7 +262,7 @@ impl RaftStorage<Request, Response> for Store {
 
     async fn apply_entry_to_state_machine(
         &self,
-        index: &u64,
+        _index: &u64,
         request: &Request,
     ) -> anyhow::Result<Response> {
         let logs = request.clone().0;
@@ -270,8 +270,12 @@ impl RaftStorage<Request, Response> for Store {
             .send(logs.clone())
             .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
 
-        let mut state_machine = self.state_machine.write().await;
-        state_machine.last_applied_log = *index;
+        {
+            let mut state_machine = self.state_machine.write().await;
+            let last_applied_log = state_machine.last_applied_log.max(1);
+            state_machine.last_applied_log = last_applied_log + logs.len().max(1) as u64;
+            self.write_state_machine(&state_machine).await?;
+        }
 
         let ids = logs.into_iter().map(|(id, _)| id).collect();
         Ok(Response(ids))
@@ -279,22 +283,23 @@ impl RaftStorage<Request, Response> for Store {
 
     async fn replicate_to_state_machine(&self, entries: &[(&u64, &Request)]) -> anyhow::Result<()> {
         let mut logs = Vec::new();
-        let mut last_applied_log = 0;
-        for (index, request) in entries {
+        let mut log_len = 0;
+        for (_, request) in entries {
             for (id, log) in &request.0 {
                 logs.push((*id, log.clone()));
+                log_len += 1;
             }
-            last_applied_log = **index;
         }
-        
-        self.bus
-            .send(logs)
-            .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
 
+        self.bus
+            .send(logs.clone())
+            .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
+        
         let mut state_machine = self.state_machine.write().await;
+        let last_applied_log = state_machine.last_applied_log.max(1);
+        state_machine.last_applied_log = last_applied_log + log_len.max(1);
         self.write_state_machine(&state_machine).await?;
 
-        state_machine.last_applied_log = last_applied_log;
         Ok(())
     }
 
