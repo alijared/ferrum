@@ -92,20 +92,17 @@ impl From<InvalidUri> for ReplicaError {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct Request(Vec<(u64, LogRecord)>);
+pub struct Request(Vec<LogRecord>);
 
 impl Request {
-    pub fn new(records: Vec<(u64, LogRecord)>) -> Self {
+    pub fn new(records: Vec<LogRecord>) -> Self {
         Self(records)
     }
 }
 
-impl From<Vec<raft_proto::Request>> for Request {
-    fn from(requests: Vec<raft_proto::Request>) -> Self {
-        let values = requests
-            .into_iter()
-            .filter_map(|r| r.record.map(|l| (r.id, l.into())))
-            .collect();
+impl From<Vec<raft_proto::LogRecord>> for Request {
+    fn from(requests: Vec<raft_proto::LogRecord>) -> Self {
+        let values = requests.into_iter().map(|r| r.into()).collect();
         Self(values)
     }
 }
@@ -126,13 +123,12 @@ pub struct Raft {
 impl Raft {
     pub async fn new(
         config: ReplicationConfig,
-        write_bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
+        write_bus: broadcast::Sender<Vec<LogRecord>>,
     ) -> Result<Self, Error> {
         let validated_config = config.builder_config.validate()?;
 
         let network = Arc::new(network::Server::new(config.node_id));
-        let storage =
-            storage::Store::new(config.node_id, config.log.data_dir, write_bus).await?;
+        let storage = storage::Store::new(config.node_id, config.log.data_dir, write_bus).await?;
         storage.initialize().await?;
 
         let raft = async_raft::Raft::new(

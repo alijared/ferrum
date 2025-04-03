@@ -1,9 +1,9 @@
 use crate::server;
-use axum::http::{Request, Response};
+use axum::http::Request;
 use log::info;
 use std::convert::Infallible;
 use tokio_util::sync::CancellationToken;
-use tonic::body::BoxBody;
+use tonic::body::Body;
 use tonic::codegen::Service;
 use tonic::server::NamedService;
 use tonic::transport::Server;
@@ -18,11 +18,8 @@ pub async fn run_server<S>(
     cancellation_token: CancellationToken,
 ) -> Result<(), server::Error>
 where
-    S: Service<Request<BoxBody>, Response = Response<BoxBody>, Error = Infallible>
-        + NamedService
-        + Clone
-        + Send
-        + 'static,
+    S: Service<Request<Body>, Error = Infallible> + NamedService + Clone + Send + Sync + 'static,
+    S::Response: axum::response::IntoResponse,
     S::Future: Send + 'static,
 {
     let addr = format!("0.0.0.0:{}", port)

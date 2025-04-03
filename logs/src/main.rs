@@ -1,7 +1,8 @@
+use crate::io::fs::FileSystem;
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-use crate::io::tables;
+use crate::io::{fs, tables};
 use crate::raft::Raft;
 use crate::server::grpc::raft::raft_proto;
 use crate::server::{grpc, http};
@@ -9,6 +10,7 @@ use clap::Parser;
 use futures_util::try_join;
 use log::{error, info};
 use std::process::exit;
+use std::sync::Arc;
 use std::time::Duration;
 use tokio::signal;
 use tokio::sync::broadcast;
@@ -20,6 +22,7 @@ mod raft;
 mod redb;
 mod server;
 mod udfs;
+mod util;
 
 #[derive(Parser, Debug)]
 #[command(version, about = "Ferrum logs", long_about = None)]
@@ -51,6 +54,23 @@ async fn main() {
         }
     };
 
+    let filesystem = match fs::new(&config.filesystem).await {
+        Ok(fs) => Arc::new(fs),
+        Err(e) => {
+            error!("Failed to initialize filesystem: {}", e);
+            exit(1);
+        }
+    };
+
+    let fs_url = filesystem.url();
+    let fs_store = filesystem.object_store();
+    if let Err(e) = io::set_session_context() {
+        error!("Failed to set session context: {}", e);
+    }
+
+    let session_context = io::get_session_context();
+    session_context.register_object_store(&fs_url, fs_store);
+
     let raft_server_port = config.replication.advertise_port;
     let replica_config = config.replication;
     let replica_timeout = replica_config.connect_timeout;
@@ -67,11 +87,8 @@ async fn main() {
     let cancellation_token = CancellationToken::new();
     shutdown(cancellation_token.clone());
 
-    let session_ctx = io::set_session_context().await;
     let logs_handle = match tables::logs::initialize(
-        &session_ctx,
-        config.data_dir.clone(),
-        Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
+        filesystem.clone(),
         logs_write_rx.resubscribe(),
         cancellation_token.clone(),
     )
@@ -85,9 +102,7 @@ async fn main() {
     };
 
     let log_attr_handle = match tables::log_attributes::initialize(
-        &session_ctx,
-        config.data_dir,
-        Duration::from_secs(config.log_table_config.compaction_frequency_seconds),
+        filesystem,
         logs_write_rx,
         cancellation_token.clone(),
     )

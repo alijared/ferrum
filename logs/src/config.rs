@@ -7,42 +7,55 @@ pub const DEFAULT_CONFIG_PATH: &str = "/etc/ferrum/config.yaml";
 const DEFAULT_DATA_DIR: &str = "/var/lib/ferrum/data";
 const DEFAULT_REPLICATION_DATA_DIR: &str = "/var/lib/ferrum/replication";
 
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Default, Deserialize)]
 pub struct Config {
-    pub data_dir: PathBuf,
-
-    #[serde(rename = "log_table")]
-    pub log_table_config: TableConfig,
-
+    pub filesystem: FilesystemConfig,
     pub server: ServerConfig,
-
-    #[serde(default)]
     pub replication: ReplicationConfig,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            data_dir: DEFAULT_DATA_DIR.into(),
-            log_table_config: TableConfig::default(),
-            server: ServerConfig::default(),
-            replication: ReplicationConfig::default(),
-        }
-    }
-}
-
 #[derive(Debug, Deserialize)]
-pub struct TableConfig {
+pub struct FilesystemConfig {
     #[serde(rename = "compaction_frequency")]
     pub compaction_frequency_seconds: u64,
+
+    #[serde(flatten)]
+    pub filesystem: Filesystem,
 }
 
-impl Default for TableConfig {
+impl Default for FilesystemConfig {
     fn default() -> Self {
         Self {
             compaction_frequency_seconds: 60,
+            filesystem: Filesystem::default(),
         }
     }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub enum Filesystem {
+    #[serde(rename = "local")]
+    Local(LocalFilesystemConfig),
+    // #[serde(alias = "s3")]
+    // S3(S3Config),
+}
+
+impl Default for Filesystem {
+    fn default() -> Self {
+        Self::Local(LocalFilesystemConfig {
+            data_dir: DEFAULT_DATA_DIR.into(),
+        })
+    }
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct LocalFilesystemConfig {
+    pub data_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+struct S3Config {
+    bucket_name: String,
 }
 
 #[derive(Debug, Default, Deserialize)]

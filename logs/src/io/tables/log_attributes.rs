@@ -1,5 +1,6 @@
+use crate::io::fs::FileSystem;
 use crate::io::tables::generic::GenericTable;
-use crate::io::tables::{BatchWrite, Table, TableOptions};
+use crate::io::tables::Table;
 use crate::io::{tables, writer};
 use crate::server::grpc::opentelemetry::LogRecord;
 use datafusion::arrow::array::{
@@ -7,19 +8,18 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit};
 use datafusion::config::{ParquetColumnOptions, ParquetOptions, TableParquetOptions};
+use datafusion::dataframe::DataFrameWriteOptions;
+use datafusion::datasource::file_format::parquet::ParquetFormat;
+use datafusion::datasource::listing::ListingOptions;
 use datafusion::error::DataFusionError;
+use datafusion::logical_expr::dml::InsertOp;
 use datafusion::logical_expr::{col, SortExpr};
 use datafusion::parquet::basic::Compression;
-use datafusion::prelude::SessionContext;
-use log::info;
 use std::collections::HashMap;
-use std::path::PathBuf;
 use std::sync::{Arc, LazyLock};
-use std::time::Duration;
-use tokio::sync::broadcast;
+use tokio::sync::{broadcast, RwLock};
 use tokio::task::JoinHandle;
 use tokio_util::sync::CancellationToken;
-use tonic::async_trait;
 
 pub const NAME: &str = "log_attributes";
 static SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
@@ -37,34 +37,58 @@ static SCHEMA: LazyLock<Schema> = LazyLock::new(|| {
 static PARTITION_COLUMNS: LazyLock<Vec<FieldRef>> =
     LazyLock::new(|| vec![Arc::new(Field::new("day", DataType::Date32, false))]);
 
-struct LogAttributesTable {
-    table: GenericTable<Self, Vec<(u64, LogRecord)>>,
-}
+struct LogAttributesTable<F: FileSystem>(GenericTable<F, Vec<LogRecord>>);
 
-impl LogAttributesTable {
-    fn new(table: GenericTable<Self, Vec<(u64, LogRecord)>>) -> Self {
-        Self { table }
+impl<F: FileSystem> LogAttributesTable<F> {
+    fn new(filesystem: Arc<F>, write_rx: broadcast::Receiver<Vec<LogRecord>>) -> Self {
+        let mut column_opts = HashMap::new();
+        column_opts.insert(
+            "key".to_string(),
+            ParquetColumnOptions {
+                bloom_filter_enabled: Some(true),
+                ..Default::default()
+            },
+        );
+        column_opts.insert(
+            "value".to_string(),
+            ParquetColumnOptions {
+                bloom_filter_enabled: Some(true),
+                ..Default::default()
+            },
+        );
+
+        let table =
+            GenericTable::new(filesystem, write_rx).with_parquet_options(TableParquetOptions {
+                global: ParquetOptions {
+                    pushdown_filters: true,
+                    reorder_filters: true,
+                    compression: Some(Compression::SNAPPY.to_string()),
+                    maximum_parallel_row_group_writers: num_cpus::get(),
+                    bloom_filter_on_write: true,
+                    ..Default::default()
+                },
+                column_specific_options: column_opts,
+                ..Default::default()
+            });
+        Self(table)
     }
 }
 
-#[async_trait]
-impl Table<Self, Vec<(u64, LogRecord)>> for LogAttributesTable {
-    async fn start(&mut self, cancellation_token: CancellationToken) {
-        self.table.start(cancellation_token).await;
+impl<F: FileSystem> Table<F, Vec<LogRecord>> for LogAttributesTable<F> {
+    fn name(&self) -> String {
+        NAME.to_string()
     }
-}
 
-impl BatchWrite<Vec<(u64, LogRecord)>> for LogAttributesTable {
-    fn make_batch(logs: Vec<(u64, LogRecord)>) -> RecordBatch {
+    fn make_batch(data: Vec<LogRecord>) -> RecordBatch {
         let mut ids = Vec::new();
         let mut keys = Vec::new();
         let mut values = Vec::new();
         let mut timestamps = Vec::new();
         let mut days = Vec::new();
 
-        for (id, log) in logs {
+        for log in data {
             for (key, value) in log.attributes {
-                ids.push(id);
+                ids.push(log.id);
                 keys.push(key);
                 values.push(value);
                 timestamps.push(log.timestamp);
@@ -84,13 +108,39 @@ impl BatchWrite<Vec<(u64, LogRecord)>> for LogAttributesTable {
             ],
         )
     }
+
+    fn filesystem(&self) -> Arc<F> {
+        self.0.filesystem()
+    }
+
+    fn write_rx(&self) -> broadcast::Receiver<Vec<LogRecord>> {
+        self.0.write_rx()
+    }
+
+    fn buffer(&self) -> Arc<RwLock<Vec<RecordBatch>>> {
+        self.0.buffer()
+    }
+
+    fn data_frame_write_options(&self) -> DataFrameWriteOptions {
+        DataFrameWriteOptions::new()
+            .with_insert_operation(InsertOp::Append)
+            .with_single_file_output(true)
+            .with_partition_by(vec!["day".to_string()])
+            .with_sort_by(vec![SortExpr {
+                expr: col("timestamp"),
+                asc: false,
+                nulls_first: false,
+            }])
+    }
+
+    fn writer_options(&self) -> TableParquetOptions {
+        self.0.writer_options()
+    }
 }
 
 pub async fn initialize(
-    ctx: &SessionContext,
-    data_path: PathBuf,
-    compaction_frequency: Duration,
-    bus: broadcast::Receiver<Vec<(u64, LogRecord)>>,
+    filesystem: Arc<impl FileSystem + 'static>,
+    write_rx: broadcast::Receiver<Vec<LogRecord>>,
     cancellation_token: CancellationToken,
 ) -> Result<JoinHandle<()>, DataFusionError> {
     let partition_by = vec![("day".to_string(), DataType::Date32)];
@@ -100,48 +150,20 @@ pub async fn initialize(
         nulls_first: false,
     }];
 
-    let mut column_opts = HashMap::new();
-    column_opts.insert(
-        "key".to_string(),
-        ParquetColumnOptions {
-            bloom_filter_enabled: Some(true),
-            ..Default::default()
-        },
-    );
-    column_opts.insert(
-        "value".to_string(),
-        ParquetColumnOptions {
-            bloom_filter_enabled: Some(true),
-            ..Default::default()
-        },
-    );
+    let listing_opts = ListingOptions::new(Arc::new(ParquetFormat::new()))
+        .with_collect_stat(false)
+        .with_table_partition_cols(partition_by)
+        .with_file_sort_order(vec![sort_by]);
 
-    let mut opts = TableOptions::new(
-        data_path,
-        compaction_frequency,
-        partition_by,
-        sort_by,
-        false,
-        TableParquetOptions {
-            global: ParquetOptions {
-                pushdown_filters: true,
-                reorder_filters: true,
-                compression: Some(Compression::SNAPPY.to_string()),
-                maximum_parallel_row_group_writers: num_cpus::get(),
-                bloom_filter_on_write: true,
-                ..Default::default()
-            },
-            column_specific_options: column_opts,
-            ..Default::default()
-        },
-    );
-    let data_path = tables::register(ctx, NAME, &opts, Arc::new(SCHEMA.clone())).await?;
-    opts.data_path = data_path;
+    tables::register(
+        NAME,
+        filesystem.url(),
+        listing_opts,
+        Arc::new(SCHEMA.clone()),
+    )
+    .await?;
 
-    info!("Starting up {} table", NAME);
-
-    let schema = writer::schema_with_fields(SCHEMA.clone(), PARTITION_COLUMNS.clone());
-    let mut table = LogAttributesTable::new(GenericTable::new(opts, schema, bus));
+    let table = LogAttributesTable::new(filesystem, write_rx);
     Ok(tokio::spawn(async move {
         table.start(cancellation_token).await;
     }))

@@ -97,7 +97,7 @@ External API for querying data with the following endpoints:
 1. `/query/fql`: Ferum Query Language endpoint
 2. `/query/sql`: Direct SQL querying
 3. `/query/attributes`: Query attribute keys based on FQL query
-4. `/query/attribute/{attribute}/values`: Query attribute values for a specific attribute
+4. `/query/attributes/{attribute}/values`: Query attribute values for a specific attribute
 
 ### Configuration management
 The system supports flexible configuration via YAML:
@@ -106,16 +106,16 @@ The system supports flexible configuration via YAML:
 * Server port configurations
 * Replication settings
 
-See [example config](./logs/config.yaml.example) for details.
+See [example config](config.yaml.example) for details.
 
-## Performance Considerations
+## Performance considerations
 
 * Uses jemallocator for memory management
 * Leverages Apache Arrow for columnar data processing
 * Implements zero-copy data transformations
-* Supports parallel processing with configurable partitions
+* Supports parallel processing
 
-## Deployment and Runtime
+## Deployment and runtime
 
 * Supports graceful shutdown
 * Configurable log levels
@@ -130,7 +130,7 @@ See [example config](./logs/config.yaml.example) for details.
 - [ ] Improve compaction strategy for better disk usage
 - [ ] Docker support
 
-### Planned short-term
+### Planned (short-term)
 
 - [ ] Distributed queries on multi-node setups
 - [ ] Refactor into multiple crates for better benchmarking and testing

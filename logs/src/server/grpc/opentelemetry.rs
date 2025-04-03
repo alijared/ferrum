@@ -1,7 +1,5 @@
-use crate::io::tables;
-use crate::raft::Raft;
-
 use crate::config::ReplicaConfig;
+use crate::raft::Raft;
 use crate::server::grpc::opentelemetry::collector::logs::v1::logs_service_client::LogsServiceClient;
 use crate::server::grpc::opentelemetry::collector::logs::v1::logs_service_server::LogsService;
 use crate::server::grpc::opentelemetry::collector::logs::v1::{
@@ -10,7 +8,7 @@ use crate::server::grpc::opentelemetry::collector::logs::v1::{
 use crate::server::grpc::opentelemetry::common::v1::any_value::Value;
 use crate::server::grpc::opentelemetry::common::v1::AnyValue;
 use crate::server::grpc::raft::raft_proto;
-use crate::{raft, server};
+use crate::{raft, server, util};
 use async_raft::async_trait::async_trait;
 use async_raft::{ClientWriteError, NodeId};
 use dashmap::DashMap;
@@ -56,6 +54,7 @@ pub mod logs {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LogRecord {
+    pub id: u64,
     pub level: String,
     pub message: String,
     pub attributes: HashMap<String, String>,
@@ -63,8 +62,9 @@ pub struct LogRecord {
     pub day: i32,
 }
 
-impl From<&logs::v1::LogRecord> for LogRecord {
-    fn from(log: &logs::v1::LogRecord) -> Self {
+impl From<(u64, &logs::v1::LogRecord)> for LogRecord {
+    fn from(value: (u64, &logs::v1::LogRecord)) -> Self {
+        let log = value.1;
         let timestamp = log.time_unix_nano as i64;
         let mut attributes = HashMap::new();
         attributes.insert("level".to_string(), log.severity_text.to_uppercase());
@@ -74,6 +74,7 @@ impl From<&logs::v1::LogRecord> for LogRecord {
         }
 
         Self {
+            id: value.0,
             level: log.severity_text.to_uppercase(),
             message: log.body.clone().map(convert_any_value).unwrap_or_default(),
             attributes,
@@ -86,6 +87,7 @@ impl From<&logs::v1::LogRecord> for LogRecord {
 impl From<raft_proto::LogRecord> for LogRecord {
     fn from(record: raft_proto::LogRecord) -> Self {
         Self {
+            id: record.id,
             level: record.level,
             message: record.message,
             attributes: record.attributes,
@@ -104,10 +106,7 @@ impl LogService {
     pub fn new(replicas: &[ReplicaConfig], raft: Raft) -> Self {
         let clients = DashMap::new();
         for replica in replicas {
-            clients.insert(
-                replica.node_id,
-                (replica.otel_address.clone(), None),
-            );
+            clients.insert(replica.node_id, (replica.otel_address.clone(), None));
         }
         Self { clients, raft }
     }
@@ -160,8 +159,9 @@ impl LogsService for LogService {
         &self,
         request: Request<ExportLogsServiceRequest>,
     ) -> Result<Response<ExportLogsServiceResponse>, Status> {
+        let node_id = self.raft.node_id();
         let leader_id = self.raft.leader_id().await;
-        if self.raft.node_id() != leader_id {
+        if node_id != leader_id {
             return self.forward_to_leader(request, leader_id).await;
         }
 
@@ -169,8 +169,8 @@ impl LogsService for LogService {
         for rl in &request.get_ref().resource_logs {
             for sl in &rl.scope_logs {
                 for log in &sl.log_records {
-                    let record = (tables::logs::generate_log_id(), LogRecord::from(log));
-                    logs.push(record);
+                    let id = util::generate_id(node_id);
+                    logs.push(LogRecord::from((id, log)));
                 }
             }
         }

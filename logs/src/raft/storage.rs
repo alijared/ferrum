@@ -24,7 +24,7 @@ const STATE_MACHINE_PATH: &str = "state_machine.json";
 pub struct Store {
     id: NodeId,
     base_path: PathBuf,
-    bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
+    bus: broadcast::Sender<Vec<LogRecord>>,
     log_db: redb::Database,
     log: RwLock<BTreeMap<u64, Entry<Request>>>,
     state_machine: RwLock<StateMachine>,
@@ -36,7 +36,7 @@ impl Store {
     pub async fn new(
         id: NodeId,
         base_path: PathBuf,
-        bus: broadcast::Sender<Vec<(u64, LogRecord)>>,
+        bus: broadcast::Sender<Vec<LogRecord>>,
     ) -> Result<Self, raft::Error> {
         tokio::fs::create_dir_all(&base_path).await?;
 
@@ -277,7 +277,7 @@ impl RaftStorage<Request, Response> for Store {
             self.write_state_machine(&state_machine).await?;
         }
 
-        let ids = logs.into_iter().map(|(id, _)| id).collect();
+        let ids = logs.into_iter().map(|log| log.id).collect();
         Ok(Response(ids))
     }
 
@@ -285,8 +285,8 @@ impl RaftStorage<Request, Response> for Store {
         let mut logs = Vec::new();
         let mut log_len = 0;
         for (_, request) in entries {
-            for (id, log) in &request.0 {
-                logs.push((*id, log.clone()));
+            for log in &request.0 {
+                logs.push(log.clone());
                 log_len += 1;
             }
         }

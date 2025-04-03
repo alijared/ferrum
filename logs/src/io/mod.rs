@@ -3,18 +3,16 @@ use datafusion::config::{ExecutionOptions, ParquetOptions};
 use datafusion::logical_expr::ScalarUDF;
 use datafusion::parquet::basic::Compression;
 use datafusion::prelude::{SessionConfig, SessionContext};
-use log::error;
-use std::fs;
-use std::path::PathBuf;
-use tokio::sync::OnceCell;
+use tokio::sync::{OnceCell, SetError};
 
+pub mod fs;
 pub mod query;
 pub mod tables;
 pub mod writer;
 
-static SQL_CTX: OnceCell<SessionContext> = OnceCell::const_new();
+static SESSION_CTX: OnceCell<SessionContext> = OnceCell::const_new();
 
-pub async fn set_session_context() -> SessionContext {
+pub fn set_session_context() -> Result<(), SetError<SessionContext>> {
     let mut session_config = SessionConfig::new()
         .with_coalesce_batches(true)
         .with_collect_statistics(true)
@@ -30,12 +28,11 @@ pub async fn set_session_context() -> SessionContext {
     let ctx = SessionContext::new_with_config(session_config);
     ctx.register_udf(ScalarUDF::from(udfs::user::Json::new()));
 
-    let _ = SQL_CTX.set(ctx.clone());
-    ctx
+    SESSION_CTX.set(ctx.clone())
 }
 
-pub fn get_sql_context<'a>() -> &'a SessionContext {
-    SQL_CTX.get().unwrap()
+pub fn get_session_context<'a>() -> &'a SessionContext {
+    SESSION_CTX.get().unwrap()
 }
 
 pub fn get_execution_options() -> ExecutionOptions {
@@ -52,13 +49,5 @@ pub fn get_execution_options() -> ExecutionOptions {
         keep_partition_by_columns: true,
         use_row_number_estimates_to_optimize_partitioning: true,
         ..Default::default()
-    }
-}
-
-pub fn clear_partition_files(files: Vec<PathBuf>) {
-    for file in files {
-        if let Err(e) = fs::remove_file(file) {
-            error!("Failed to remove old pre-merged partition file: {}", e);
-        }
     }
 }

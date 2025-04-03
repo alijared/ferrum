@@ -1,23 +1,17 @@
 use crate::io;
+use crate::io::fs::FileSystem;
 use crate::io::writer;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::{DataType, Schema, SchemaRef};
-use datafusion::catalog::TableReference;
-use datafusion::common::DEFAULT_PARQUET_EXTENSION;
+use datafusion::arrow::datatypes::SchemaRef;
 use datafusion::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
-use datafusion::datasource::file_format::parquet::ParquetFormat;
 use datafusion::datasource::listing::ListingOptions;
 use datafusion::error::DataFusionError;
-use datafusion::logical_expr::dml::InsertOp;
-use datafusion::logical_expr::SortExpr;
-use datafusion::prelude::{ParquetReadOptions, SessionContext};
+use datafusion::prelude::SessionContext;
 use log::{error, info};
-use std::fs;
-use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::task::JoinHandle;
+use tokio::sync::{broadcast, RwLock};
 use tokio_util::sync::CancellationToken;
 use tonic::async_trait;
 
@@ -26,167 +20,108 @@ pub mod log_attributes;
 pub mod logs;
 
 #[async_trait]
-trait Table<R: BatchWrite<T>, T: Clone + Send + Sync> {
-    async fn start(&mut self, cancellation_token: CancellationToken);
-}
+trait Table<F: FileSystem, T: Clone + Sync + Send> {
+    async fn start(&self, cancellation_token: CancellationToken) {
+        let table_name = self.name();
+        info!("Starting {} table", table_name);
+        let fs = self.filesystem();
+        let compaction_handler = fs.start_compactor(&table_name, cancellation_token.clone());
 
-trait BatchWrite<T: Clone + Send + Sync> {
-    fn make_batch(_data: T) -> RecordBatch {
-        RecordBatch::new_empty(Arc::new(Schema::empty()))
-    }
-}
-
-#[derive(Clone)]
-pub struct TableOptions {
-    data_path: PathBuf,
-    compaction_frequency: Duration,
-    partition_by: Vec<(String, DataType)>,
-    sort_by: Vec<SortExpr>,
-    listing_options: ListingOptions,
-    parquet: TableParquetOptions,
-}
-
-impl TableOptions {
-    pub fn new(
-        data_path: PathBuf,
-        compaction_frequency: Duration,
-        partition_by: Vec<(String, DataType)>,
-        sort_by: Vec<SortExpr>,
-        collect_stat: bool,
-        parquet: TableParquetOptions,
-    ) -> Self {
-        Self {
-            data_path: data_path.join("tables"),
-            compaction_frequency,
-            partition_by: partition_by.clone(),
-            sort_by: sort_by.clone(),
-            listing_options: ListingOptions::new(Arc::new(ParquetFormat::new()))
-                .with_collect_stat(collect_stat)
-                .with_table_partition_cols(partition_by)
-                .with_file_sort_order(vec![sort_by]),
-            parquet,
-        }
-    }
-
-    pub fn data_path(&self) -> PathBuf {
-        self.data_path.clone()
-    }
-
-    pub fn parquet(&self) -> TableParquetOptions {
-        self.parquet.clone()
-    }
-}
-
-impl From<&TableOptions> for DataFrameWriteOptions {
-    fn from(opts: &TableOptions) -> DataFrameWriteOptions {
-        let partition_by = opts.partition_by.clone().into_iter().map(|t| t.0).collect();
-        DataFrameWriteOptions::new()
-            .with_insert_operation(InsertOp::Append)
-            .with_partition_by(partition_by)
-            .with_sort_by(opts.sort_by.clone())
-            .with_single_file_output(true)
-    }
-}
-
-async fn start_compaction<R: BatchWrite<T>, T: Clone + Send + Sync>(
-    opts: Arc<TableOptions>,
-    schema: Schema,
-    cancellation_token: CancellationToken,
-) -> JoinHandle<()> {
-    info!("Starting compactor...");
-
-    tokio::spawn(async move {
-        let mut interval = tokio::time::interval(opts.compaction_frequency);
-        let opts = opts.clone();
+        let mut interval = tokio::time::interval(Duration::from_secs(1));
+        let mut rx = self.write_rx();
+        let ctx = io::get_session_context();
         loop {
-            let schema = schema.clone();
             tokio::select! {
-                _ = interval.tick() => {
-                    if let Err(e)
-                        = run_compaction::<R, T>(opts.as_ref(), schema).await {
-                            error!("Error compacting partitions: {}", e);
-                    }
-                }
+                _ = interval.tick() => self.flush(ctx).await,
                 _ = cancellation_token.cancelled() => {
+                    self.flush(ctx).await;
                     break;
                 }
+                batch = rx.recv() => match batch {
+                    Ok(b) => {
+                        self.write_buffer(Self::make_batch(b)).await;
+                    }
+                    Err(e) => {
+                        error!("Failed to receive message in {} table: {}", table_name, e);
+                    }
+                }
             }
         }
-        info!("Compactor stopped");
-    })
-}
 
-async fn run_compaction<R: BatchWrite<T>, T: Clone + Send + Sync>(
-    opts: &TableOptions,
-    schema: Schema,
-) -> Result<(), DataFusionError> {
-    let day = chrono::Utc::now().format("%Y-%m-%d").to_string();
-    let part_name = format!("day={}", day);
-    let part_dir = Path::new(&opts.data_path).join(&part_name);
-
-    if !part_dir.exists() {
-        return Ok(());
+        compaction_handler.await;
+        info!("Stopped {} table", table_name);
     }
 
-    let rd = fs::read_dir(part_dir).map_err(DataFusionError::IoError)?;
-    let mut files = Vec::new();
-    for entry_result in rd {
-        let entry = entry_result.map_err(DataFusionError::IoError)?;
-        if let Some(ext) = entry.path().extension() {
-            let fext = format!(".{}", ext.to_str().unwrap_or_default());
-            if fext == DEFAULT_PARQUET_EXTENSION {
-                files.push(entry.path());
+    async fn flush(&self, ctx: &SessionContext) {
+        let buffer_guard = self.buffer();
+        let mut buffer = buffer_guard.write().await;
+        let df_options = self.data_frame_write_options();
+        let writer_options = self.writer_options();
+
+        if !buffer.is_empty() {
+            let table_name = self.name();
+            info!("Flushing data for {} table", table_name);
+            match writer::combine_batches(&buffer) {
+                Ok(batch) => {
+                    let table_path = self.table_path();
+                    if let Err(e) = writer::write_batch(
+                        ctx,
+                        &table_path,
+                        df_options,
+                        writer_options,
+                        vec![batch],
+                    )
+                    .await
+                    {
+                        error!("Failed to write data to {} table: {}", table_name, e);
+                    }
+                    buffer.clear();
+                }
+                Err(e) => {
+                    error!("Failed to combine batches for {} table: {}", table_name, e);
+                }
             }
         }
     }
 
-    if files.is_empty() || files.len() == 1 {
-        return Ok(());
+    async fn write_buffer(&self, record_batch: RecordBatch) {
+        let guard = self.buffer();
+        let mut buffer = guard.write().await;
+        buffer.push(record_batch);
     }
 
-    info!("Running table compaction...");
+    fn table_path(&self) -> String {
+        let url = self.filesystem().url();
+        format!("{}/{}", url.as_str(), self.name())
+    }
 
-    let ctx = io::get_sql_context();
-    let df = ctx
-        .read_parquet(
-            files
-                .iter()
-                .map(|s| s.to_str().unwrap())
-                .collect::<Vec<_>>(),
-            ParquetReadOptions {
-                schema: Some(&schema),
-                ..Default::default()
-            },
-        )
-        .await?;
+    fn name(&self) -> String;
 
-    let batches = df.collect().await?;
-    writer::write_batch(ctx, opts, batches).await?;
-    io::clear_partition_files(files);
+    fn make_batch(data: T) -> RecordBatch;
 
-    info!("Table compaction completed");
-    Ok(())
+    fn filesystem(&self) -> Arc<F>;
+
+    fn write_rx(&self) -> broadcast::Receiver<T>;
+
+    fn buffer(&self) -> Arc<RwLock<Vec<RecordBatch>>>;
+
+    fn data_frame_write_options(&self) -> DataFrameWriteOptions;
+
+    fn writer_options(&self) -> TableParquetOptions;
 }
 
 async fn register(
-    ctx: &SessionContext,
     name: &str,
-    opts: &TableOptions,
+    url: impl AsRef<str>,
+    opts: ListingOptions,
     schema: SchemaRef,
-) -> Result<PathBuf, DataFusionError> {
+) -> Result<(), DataFusionError> {
     info!("Registering {} table", name);
-    let table_ref = TableReference::from(name);
-    let data_path = opts.data_path.join(name);
-    fs::create_dir_all(&data_path)?;
-    ctx.register_listing_table(
-        table_ref,
-        data_path.to_str().unwrap(),
-        opts.clone().listing_options,
-        Some(schema),
-        None,
-    )
-    .await?;
+
+    let ctx = io::get_session_context();
+    ctx.register_listing_table(name, url, opts, Some(schema), None)
+        .await?;
 
     info!("Registered {} table", name);
-    Ok(data_path)
+    Ok(())
 }
