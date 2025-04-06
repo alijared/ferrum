@@ -1,13 +1,12 @@
-use crate::io::fs::FileSystem;
 #[global_allocator]
 static GLOBAL: jemallocator::Jemalloc = jemallocator::Jemalloc;
 
-use crate::io::{fs, tables};
+use crate::io::tables;
 use crate::raft::Raft;
 use crate::server::grpc::raft::raft_proto;
 use crate::server::{grpc, http};
 use clap::Parser;
-use futures_util::try_join;
+use futures::try_join;
 use log::{error, info};
 use std::process::exit;
 use std::sync::Arc;
@@ -54,22 +53,20 @@ async fn main() {
         }
     };
 
-    let filesystem = match fs::new(&config.filesystem).await {
-        Ok(fs) => Arc::new(fs),
+    let (filesystem, url) = match object_store::Filesystem::new(config.filesystem).await {
+        Ok((f, url)) => (Arc::new(f), url),
         Err(e) => {
             error!("Failed to initialize filesystem: {}", e);
             exit(1);
         }
     };
 
-    let fs_url = filesystem.url();
-    let fs_store = filesystem.object_store();
     if let Err(e) = io::set_session_context() {
         error!("Failed to set session context: {}", e);
+        exit(1);
     }
-
     let session_context = io::get_session_context();
-    session_context.register_object_store(&fs_url, fs_store);
+    session_context.register_object_store(&url, filesystem.clone());
 
     let raft_server_port = config.replication.advertise_port;
     let replica_config = config.replication;
@@ -87,9 +84,11 @@ async fn main() {
     let cancellation_token = CancellationToken::new();
     shutdown(cancellation_token.clone());
 
+    let compaction_frequency = Duration::from_secs(config.compaction_frequency_seconds);
     let logs_handle = match tables::logs::initialize(
-        filesystem.clone(),
         logs_write_rx.resubscribe(),
+        filesystem.clone(),
+        compaction_frequency,
         cancellation_token.clone(),
     )
     .await
@@ -102,8 +101,9 @@ async fn main() {
     };
 
     let log_attr_handle = match tables::log_attributes::initialize(
-        filesystem,
         logs_write_rx,
+        filesystem.clone(),
+        compaction_frequency,
         cancellation_token.clone(),
     )
     .await

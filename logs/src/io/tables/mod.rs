@@ -1,14 +1,14 @@
 use crate::io;
-use crate::io::fs::FileSystem;
 use crate::io::writer;
+use chrono::Utc;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::SchemaRef;
-use datafusion::config::TableParquetOptions;
+use datafusion::arrow::datatypes::{Schema, SchemaRef};
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::datasource::listing::ListingOptions;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 use log::{error, info};
+use object_store::Filesystem;
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::sync::{broadcast, RwLock};
@@ -20,16 +20,42 @@ pub mod log_attributes;
 pub mod logs;
 
 #[async_trait]
-trait Table<F: FileSystem, T: Clone + Sync + Send> {
+trait Table<T: Clone + Sync + Send> {
     async fn start(&self, cancellation_token: CancellationToken) {
         let table_name = self.name();
-        info!("Starting {} table", table_name);
+
+        info!("Starting {} table", &table_name);
+
+        let compactor_cancellation_token = cancellation_token.clone();
+        let compaction_frequency = self.compaction_frequency();
         let fs = self.filesystem();
-        let compaction_handler = fs.start_compactor(&table_name, cancellation_token.clone());
+        let df_opts = self.data_frame_write_options();
+        let compactor_handle = tokio::spawn(async move {
+            let mut interval = tokio::time::interval(compaction_frequency);
+            let ctx = io::get_session_context();
+
+            let mut df_opts = Some(df_opts);
+            let table_name = table_name.clone();
+            loop {
+                let df_opts = df_opts.take().unwrap_or_default();
+                let partition_day = Utc::now();
+                tokio::select! {
+                    _ = interval.tick() => {
+                        if let Err(e) = fs.compact(ctx, &table_name, partition_day, df_opts).await {
+                            error!("Error compacting {} table files: {}", &table_name, e);
+                        }
+                    }
+                    _ = compactor_cancellation_token.cancelled() => {
+                        break;
+                    }
+                }
+            }
+        });
 
         let mut interval = tokio::time::interval(Duration::from_secs(1));
         let mut rx = self.write_rx();
         let ctx = io::get_session_context();
+        let table_name = self.name();
         loop {
             tokio::select! {
                 _ = interval.tick() => self.flush(ctx).await,
@@ -39,39 +65,34 @@ trait Table<F: FileSystem, T: Clone + Sync + Send> {
                 }
                 batch = rx.recv() => match batch {
                     Ok(b) => {
-                        self.write_buffer(Self::make_batch(b)).await;
+                        self.write_buffer(self.make_batch(b)).await;
                     }
                     Err(e) => {
-                        error!("Failed to receive message in {} table: {}", table_name, e);
+                        error!("Failed to receive message in {} table: {}", &table_name, e);
                     }
                 }
             }
         }
 
-        compaction_handler.await;
-        info!("Stopped {} table", table_name);
+        info!("Stopping {} table", &table_name);
+        if let Err(e) = compactor_handle.await {
+            error!("Error joining compactor handle: {}", e);
+        }
+
+        info!("Stopped {} table", &table_name);
     }
 
     async fn flush(&self, ctx: &SessionContext) {
         let buffer_guard = self.buffer();
         let mut buffer = buffer_guard.write().await;
         let df_options = self.data_frame_write_options();
-        let writer_options = self.writer_options();
 
         if !buffer.is_empty() {
             let table_name = self.name();
-            info!("Flushing data for {} table", table_name);
             match writer::combine_batches(&buffer) {
                 Ok(batch) => {
-                    let table_path = self.table_path();
-                    if let Err(e) = writer::write_batch(
-                        ctx,
-                        &table_path,
-                        df_options,
-                        writer_options,
-                        vec![batch],
-                    )
-                    .await
+                    if let Err(e) =
+                        writer::write_batch(ctx, &table_name, df_options, vec![batch]).await
                     {
                         error!("Failed to write data to {} table: {}", table_name, e);
                     }
@@ -90,24 +111,29 @@ trait Table<F: FileSystem, T: Clone + Sync + Send> {
         buffer.push(record_batch);
     }
 
-    fn table_path(&self) -> String {
-        let url = self.filesystem().url();
-        format!("{}/{}", url.as_str(), self.name())
+    fn name(&self) -> String {
+        "".to_string()
     }
 
-    fn name(&self) -> String;
+    fn make_batch(&self, _data: T) -> RecordBatch {
+        RecordBatch::new_empty(Arc::new(self.schema()))
+    }
 
-    fn make_batch(data: T) -> RecordBatch;
+    fn data_frame_write_options(&self) -> DataFrameWriteOptions {
+        DataFrameWriteOptions::default()
+    }
 
-    fn filesystem(&self) -> Arc<F>;
+    fn schema(&self) -> Schema {
+        Schema::empty()
+    }
+
+    fn filesystem(&self) -> Arc<Filesystem>;
+
+    fn compaction_frequency(&self) -> Duration;
 
     fn write_rx(&self) -> broadcast::Receiver<T>;
 
     fn buffer(&self) -> Arc<RwLock<Vec<RecordBatch>>>;
-
-    fn data_frame_write_options(&self) -> DataFrameWriteOptions;
-
-    fn writer_options(&self) -> TableParquetOptions;
 }
 
 async fn register(

@@ -2,7 +2,6 @@ use datafusion::arrow::array::{ArrayRef, RecordBatch};
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::{FieldRef, Schema};
 use datafusion::arrow::error::ArrowError;
-use datafusion::config::TableParquetOptions;
 use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
@@ -30,14 +29,12 @@ pub fn combine_batches(batches: &[RecordBatch]) -> Result<RecordBatch, ArrowErro
 
 pub async fn write_batch(
     ctx: &SessionContext,
-    path: &str,
+    table_name: &str,
     df_options: DataFrameWriteOptions,
-    writer_options: TableParquetOptions,
     batch: Vec<RecordBatch>,
 ) -> Result<(), DataFusionError> {
     let df = ctx.read_batches(batch)?;
-    df.write_parquet(path, df_options, Some(writer_options))
-        .await?;
+    df.write_table(table_name, df_options).await?;
 
     Ok(())
 }

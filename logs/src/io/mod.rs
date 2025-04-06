@@ -5,7 +5,6 @@ use datafusion::parquet::basic::Compression;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::{OnceCell, SetError};
 
-pub mod fs;
 pub mod query;
 pub mod tables;
 pub mod writer;
@@ -16,7 +15,6 @@ pub fn set_session_context() -> Result<(), SetError<SessionContext>> {
     let mut session_config = SessionConfig::new()
         .with_coalesce_batches(true)
         .with_collect_statistics(true)
-        .with_target_partitions(num_cpus::get())
         .with_parquet_pruning(true)
         .with_parquet_bloom_filter_pruning(true)
         .with_parquet_page_index_pruning(true)
@@ -41,6 +39,7 @@ pub fn get_execution_options() -> ExecutionOptions {
         parquet: ParquetOptions {
             pushdown_filters: true,
             reorder_filters: true,
+            writer_version: "2.0".to_string(),
             compression: Some(Compression::SNAPPY.to_string()),
             maximum_parallel_row_group_writers: num_cpus::get(),
             bloom_filter_on_write: true,

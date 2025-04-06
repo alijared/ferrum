@@ -5,7 +5,7 @@ use datafusion::arrow::array::{
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use datafusion::execution::SendableRecordBatchStream;
-use futures_util::StreamExt;
+use futures::StreamExt;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use tonic::async_trait;
@@ -31,7 +31,7 @@ impl query::FromStreams for AttributeKeys {
             while let Some(batch_result) = stream.next().await {
                 let batch = batch_result?;
                 let list = batch
-                    .column(batch.schema().index_of("key").unwrap())
+                    .column(batch.schema().index_of("key")?)
                     .as_list::<i32>();
 
                 let values = list.values().as_string::<i32>();

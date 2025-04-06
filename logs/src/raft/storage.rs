@@ -294,7 +294,7 @@ impl RaftStorage<Request, Response> for Store {
         self.bus
             .send(logs.clone())
             .map_err(|e| anyhow!("Failed to send log to broadcast channel: {}", e))?;
-        
+
         let mut state_machine = self.state_machine.write().await;
         let last_applied_log = state_machine.last_applied_log.max(1);
         state_machine.last_applied_log = last_applied_log + log_len.max(1);

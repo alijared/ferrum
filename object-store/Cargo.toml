@@ -1,0 +1,17 @@
+[package]
+name = "object-store"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+async-trait.workspace = true
+chrono.workspace = true
+dashmap.workspace = true
+datafusion = "46.0.1"
+futures.workspace = true
+object_store = { version = "0.11.2", features = ["aws"] }
+serde.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+url = "2.5.4"
+log = "0.4.26"

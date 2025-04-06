@@ -1,9 +1,9 @@
 use crate::io::query;
 use crate::server::http::schemas::{AttributeKeys, AttributeValues, LogWithAttributesTuple};
 use datafusion::execution::SendableRecordBatchStream;
-use futures_util::StreamExt;
 use serde::Serialize;
 use std::collections::HashMap;
+use futures::StreamExt;
 use tonic::async_trait;
 
 #[derive(Serialize)]

@@ -1,70 +1,37 @@
 use async_raft::{NodeId, SnapshotPolicy};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::PathBuf;
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/ferrum/config.yaml";
-const DEFAULT_DATA_DIR: &str = "/var/lib/ferrum/data";
 const DEFAULT_REPLICATION_DATA_DIR: &str = "/var/lib/ferrum/replication";
+const DEFAULT_COMPACTION_FREQUENCY: u64 = 60;
 
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Config {
-    pub filesystem: FilesystemConfig,
+    #[serde(
+        rename = "compaction_frequency",
+        default = "default_compaction_frequency"
+    )]
+    pub compaction_frequency_seconds: u64,
+
+    #[serde(default)]
+    pub filesystem: object_store::config::Config,
+
+    #[serde(default)]
     pub server: ServerConfig,
+
+    #[serde(default)]
     pub replication: ReplicationConfig,
 }
 
-#[derive(Debug, Deserialize)]
-pub struct FilesystemConfig {
-    #[serde(rename = "compaction_frequency")]
-    pub compaction_frequency_seconds: u64,
-
-    #[serde(flatten)]
-    pub filesystem: Filesystem,
-}
-
-impl Default for FilesystemConfig {
-    fn default() -> Self {
-        Self {
-            compaction_frequency_seconds: 60,
-            filesystem: Filesystem::default(),
-        }
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub enum Filesystem {
-    #[serde(rename = "local")]
-    Local(LocalFilesystemConfig),
-    // #[serde(alias = "s3")]
-    // S3(S3Config),
-}
-
-impl Default for Filesystem {
-    fn default() -> Self {
-        Self::Local(LocalFilesystemConfig {
-            data_dir: DEFAULT_DATA_DIR.into(),
-        })
-    }
-}
-
-#[derive(Debug, Clone, Deserialize)]
-pub struct LocalFilesystemConfig {
-    pub data_dir: PathBuf,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct S3Config {
-    bucket_name: String,
-}
-
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub grpc: GrpcConfig,
     pub http: HttpConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct GrpcConfig {
     pub port: u32,
 }
@@ -75,7 +42,7 @@ impl Default for GrpcConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct HttpConfig {
     pub port: u32,
 }
@@ -86,7 +53,7 @@ impl Default for HttpConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ReplicationConfig {
     pub node_id: NodeId,
     pub advertise_port: u32,
@@ -113,7 +80,7 @@ impl Default for ReplicationConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ReplicationLogConfig {
     pub data_dir: PathBuf,
     max_entries: u64,
@@ -128,7 +95,7 @@ impl Default for ReplicationLogConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReplicaConfig {
     pub node_id: NodeId,
     pub otel_address: String,
@@ -151,4 +118,8 @@ pub fn load(filename: &str) -> Result<Config, Error> {
     let max_entries = c.replication.log.max_entries;
     c.replication.builder_config.snapshot_policy = Some(SnapshotPolicy::LogsSinceLast(max_entries));
     Ok(c)
+}
+
+fn default_compaction_frequency() -> u64 {
+    DEFAULT_COMPACTION_FREQUENCY
 }
