@@ -138,7 +138,7 @@ pub async fn attribute_values<T: FromStreams>(
     attribute: &str,
     limit: Option<usize>,
 ) -> Result<T, query::Error> {
-    let ctx = io::get_sql_context();
+    let ctx = io::get_session_context();
     let df = df_from_timeframe(
         ctx,
         tables::log_attributes::NAME,
@@ -164,7 +164,7 @@ async fn select_logs(
     let query = ferrum_ql::parse(&params.query.unwrap_or("{}".to_string()))
         .map_err(|e| query::Error::Query(e.to_string()))?;
 
-    let ctx = io::get_sql_context();
+    let ctx = io::get_session_context();
     let selector = query.selector.clone();
     let time_range = params.time_range;
     let attr_df = df_from_timeframe(

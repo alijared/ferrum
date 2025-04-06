@@ -1,8 +1,8 @@
-use crate::io::tables;
 use datafusion::arrow::array::{ArrayRef, RecordBatch};
 use datafusion::arrow::compute::concat_batches;
 use datafusion::arrow::datatypes::{FieldRef, Schema};
 use datafusion::arrow::error::ArrowError;
+use datafusion::dataframe::DataFrameWriteOptions;
 use datafusion::error::DataFusionError;
 use datafusion::prelude::SessionContext;
 use std::sync::Arc;
@@ -29,24 +29,17 @@ pub fn combine_batches(batches: &[RecordBatch]) -> Result<RecordBatch, ArrowErro
 
 pub async fn write_batch(
     ctx: &SessionContext,
-    opts: &tables::TableOptions,
+    table_name: &str,
+    df_options: DataFrameWriteOptions,
     batch: Vec<RecordBatch>,
 ) -> Result<(), DataFusionError> {
     let df = ctx.read_batches(batch)?;
-    match df
-        .write_parquet(
-            opts.data_path().to_str().unwrap(),
-            opts.into(),
-            Some(opts.parquet()),
-        )
-        .await
-    {
-        Ok(_) => Ok(()),
-        Err(e) => Err(e),
-    }
+    df.write_table(table_name, df_options).await?;
+
+    Ok(())
 }
 
-pub  fn schema_with_fields(schema: Schema, mut new_fields: Vec<FieldRef>) -> Schema {
+pub fn schema_with_fields(schema: Schema, mut new_fields: Vec<FieldRef>) -> Schema {
     if new_fields.is_empty() {
         return schema;
     }

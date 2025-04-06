@@ -87,7 +87,7 @@ impl ScalarUDFImpl for Json {
                     };
                     builder.values().append_value(&value_str);
                 }
-                builder.append(true).unwrap();
+                builder.append(true)?;
             }
         }
 

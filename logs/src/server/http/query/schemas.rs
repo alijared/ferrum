@@ -2,10 +2,10 @@ use crate::io::query;
 use crate::server::http::schemas::LogWithAttributesTuple;
 use chrono::{DateTime, Utc};
 use datafusion::execution::SendableRecordBatchStream;
-use futures_util::StreamExt;
 use serde::Serialize;
 use serde_json::json;
 use std::collections::HashMap;
+use futures::StreamExt;
 use tonic::async_trait;
 
 #[derive(Serialize)]

@@ -1,57 +1,37 @@
 use async_raft::{NodeId, SnapshotPolicy};
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 use std::fs::File;
 use std::path::PathBuf;
 
 pub const DEFAULT_CONFIG_PATH: &str = "/etc/ferrum/config.yaml";
-const DEFAULT_DATA_DIR: &str = "/var/lib/ferrum/data";
 const DEFAULT_REPLICATION_DATA_DIR: &str = "/var/lib/ferrum/replication";
+const DEFAULT_COMPACTION_FREQUENCY: u64 = 60;
 
-#[derive(Debug, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct Config {
-    pub data_dir: PathBuf,
+    #[serde(
+        rename = "compaction_frequency",
+        default = "default_compaction_frequency"
+    )]
+    pub compaction_frequency_seconds: u64,
 
-    #[serde(rename = "log_table")]
-    pub log_table_config: TableConfig,
+    #[serde(default)]
+    pub filesystem: object_store::config::Config,
 
+    #[serde(default)]
     pub server: ServerConfig,
 
     #[serde(default)]
     pub replication: ReplicationConfig,
 }
 
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            data_dir: DEFAULT_DATA_DIR.into(),
-            log_table_config: TableConfig::default(),
-            server: ServerConfig::default(),
-            replication: ReplicationConfig::default(),
-        }
-    }
-}
-
-#[derive(Debug, Deserialize)]
-pub struct TableConfig {
-    #[serde(rename = "compaction_frequency")]
-    pub compaction_frequency_seconds: u64,
-}
-
-impl Default for TableConfig {
-    fn default() -> Self {
-        Self {
-            compaction_frequency_seconds: 60,
-        }
-    }
-}
-
-#[derive(Debug, Default, Deserialize)]
+#[derive(Default, Serialize, Deserialize)]
 pub struct ServerConfig {
     pub grpc: GrpcConfig,
     pub http: HttpConfig,
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct GrpcConfig {
     pub port: u32,
 }
@@ -62,7 +42,7 @@ impl Default for GrpcConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct HttpConfig {
     pub port: u32,
 }
@@ -73,7 +53,7 @@ impl Default for HttpConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ReplicationConfig {
     pub node_id: NodeId,
     pub advertise_port: u32,
@@ -100,7 +80,7 @@ impl Default for ReplicationConfig {
     }
 }
 
-#[derive(Debug, Deserialize)]
+#[derive(Serialize, Deserialize)]
 pub struct ReplicationLogConfig {
     pub data_dir: PathBuf,
     max_entries: u64,
@@ -115,7 +95,7 @@ impl Default for ReplicationLogConfig {
     }
 }
 
-#[derive(Debug, Clone, Default, Deserialize)]
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct ReplicaConfig {
     pub node_id: NodeId,
     pub otel_address: String,
@@ -138,4 +118,8 @@ pub fn load(filename: &str) -> Result<Config, Error> {
     let max_entries = c.replication.log.max_entries;
     c.replication.builder_config.snapshot_policy = Some(SnapshotPolicy::LogsSinceLast(max_entries));
     Ok(c)
+}
+
+fn default_compaction_frequency() -> u64 {
+    DEFAULT_COMPACTION_FREQUENCY
 }

@@ -117,7 +117,7 @@ fn map_entry_payload(payload: Payload) -> Result<EntryPayload<raft::Request>, an
     match payload {
         Payload::Blank(_) => Ok(EntryPayload::Blank),
         Payload::Normal(payload) => Ok(EntryPayload::Normal(EntryNormal {
-            data: payload.request.into(),
+            data: payload.records.into(),
         })),
         Payload::ConfigChange(c) => {
             let membership = c.membership.ok_or(anyhow!("Empty membership config"))?;

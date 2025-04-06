@@ -1,7 +1,15 @@
 # Ferrum configuration File
 # Typically located at /etc/ferrum/config.yaml
 
-data_dir: "/var/lib/ferrum/data" # directory to store persistent data
+compaction_frequency: 60
+filesystem:
+#  local:
+#    data_dir: "/var/lib/ferrum/data" # directory to store persistent data
+  s3:
+    override_endpoint: "http://localhost:9000" # override directory (for local testing for example)
+    bucket_name: "test-bucket" # name of the bucket to store persistent data
+    access_key: "xxxxxx" # s3 access key (only used in conjunction with override_endpoint)
+    secret_key: "xxxxxx" # s3 secret key (only used in conjunction with override_endpoint)
 
 # Log table configuration
 log_table:
@@ -39,8 +47,8 @@ replication:
 #  replicas:
 #    - node_id: 2
 #      otel_address: "http://replica2.example.com:4317" # address of the replica OpenTelemetry server for request forwarding
-#      raft_address: "replica2.example.com:9234" # address of the replica Raft server
+#      raft_address: "http://replica2.example.com:9234" # address of the replica Raft server
 #
 #    - node_id: 3
 #      otel_address: "http://replica3.example.com:4317"
-#      raft_address: "replica3.example.com:9234"
+#      raft_address: "http://replica3.example.com:9234"

@@ -192,20 +192,18 @@ fn map_entries(entries: Vec<Entry<Request>>) -> Result<Vec<raft_proto::Entry>, a
 }
 
 fn map_payload(payload: Request) -> EntryNormalPayload {
-    let mut requests = Vec::with_capacity(payload.0.len());
-    for (id, log) in payload.0 {
-        requests.push(raft_proto::Request {
-            id,
-            record: Some(raft_proto::LogRecord {
-                level: log.level,
-                message: log.message,
-                attributes: log.attributes,
-                timestamp: log.timestamp,
-                day: log.day,
-            }),
+    let mut records = Vec::with_capacity(payload.0.len());
+    for log in payload.0 {
+        records.push(raft_proto::LogRecord {
+            id: log.id,
+            level: log.level,
+            message: log.message,
+            attributes: log.attributes,
+            timestamp: log.timestamp,
+            day: log.day,
         });
     }
-    EntryNormalPayload { request: requests }
+    EntryNormalPayload { records }
 }
 
 fn map_config_change(config: MembershipConfig) -> raft_proto::MembershipConfig {

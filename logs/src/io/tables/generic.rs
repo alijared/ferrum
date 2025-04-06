@@ -1,88 +1,46 @@
-use crate::io;
-use crate::io::tables::{start_compaction, BatchWrite, Table, TableOptions};
-use crate::io::writer;
+use crate::io::tables::Table;
 use datafusion::arrow::array::RecordBatch;
-use datafusion::arrow::datatypes::Schema;
-use datafusion::prelude::SessionContext;
-use log::{debug, error};
-use std::marker::PhantomData;
+use object_store::Filesystem;
 use std::sync::Arc;
 use std::time::Duration;
-use tokio::sync::broadcast;
-use tokio_util::sync::CancellationToken;
-use tonic::async_trait;
+use tokio::sync::{broadcast, RwLock};
 
-pub struct GenericTable<R: BatchWrite<T>, T: Clone + Send + Sync> {
-    _phantom: PhantomData<R>,
-    schema: Schema,
-    opts: TableOptions,
-    bus: broadcast::Receiver<T>,
-    buffer: Vec<RecordBatch>,
+pub struct GenericTable<T: Clone + Send + Sync> {
+    write_rx: broadcast::Receiver<T>,
+    buffer: Arc<RwLock<Vec<RecordBatch>>>,
+    filesystem: Arc<Filesystem>,
+    compaction_frequency: Duration,
 }
 
-#[async_trait]
-impl<R: BatchWrite<T> + Send + Sync, T: Clone + Send + Sync> Table<R, T> for GenericTable<R, T> {
-    async fn start(&mut self, cancellation_token: CancellationToken) {
-        let ctx = io::get_sql_context();
-        let mut interval = tokio::time::interval(Duration::from_secs(1));
-        
-        let compaction_handler = start_compaction::<R, T>(
-            Arc::new(self.opts.clone()),
-            self.schema.clone(),
-            cancellation_token.clone(),
-        )
-        .await;
-
-        let cancellation_token = cancellation_token.clone();
-        loop {
-            tokio::select! {
-                _ = interval.tick() => self.flush(ctx).await,
-                _ = cancellation_token.cancelled() => {
-                    self.flush(ctx).await;
-                    break;
-                }
-                bus = self.bus.recv() => match bus {
-                    Ok(batch) => self.buffer.push(R::make_batch(batch)),
-                    Err(e) => {
-                        error!("Failed to receive message: {}", e);
-                    }
-                }
-            }
-        }
-
-        let _ = compaction_handler.await;
-    }
-}
-
-impl<R: BatchWrite<T>, T: Clone + Send + Sync> GenericTable<R, T> {
+impl<T: Clone + Send + Sync> GenericTable<T> {
     pub fn new(
-        opts: TableOptions,
-        schema: Schema,
-        bus: broadcast::Receiver<T>,
+        write_rx: broadcast::Receiver<T>,
+        filesystem: Arc<Filesystem>,
+        compaction_frequency: Duration,
     ) -> Self {
         Self {
-            _phantom: Default::default(),
-            opts,
-            schema,
-            bus,
-            buffer: Vec::new(),
+            write_rx,
+            buffer: Arc::new(RwLock::new(Vec::new())),
+            filesystem,
+            compaction_frequency,
         }
     }
+}
 
-    async fn flush(&mut self, ctx: &SessionContext) {
-        debug!("Flushing data...");
-        if !self.buffer.is_empty() {
-            match writer::combine_batches(&self.buffer) {
-                Ok(batch) => {
-                    if let Err(e) = writer::write_batch(ctx, &self.opts, vec![batch]).await {
-                        error!("Failed to write logs: {}", e);
-                    }
-                    self.buffer.clear();
-                }
-                Err(e) => {
-                    error!("Failed to combine batches: {}", e);
-                }
-            }
-        }
+impl<T: Clone + Send + Sync> Table<T> for GenericTable<T> {
+    fn filesystem(&self) -> Arc<Filesystem> {
+        self.filesystem.clone()
+    }
+
+    fn compaction_frequency(&self) -> Duration {
+        self.compaction_frequency
+    }
+
+    fn write_rx(&self) -> broadcast::Receiver<T> {
+        self.write_rx.resubscribe()
+    }
+
+    fn buffer(&self) -> Arc<RwLock<Vec<RecordBatch>>> {
+        self.buffer.clone()
     }
 }

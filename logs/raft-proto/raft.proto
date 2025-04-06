@@ -9,11 +9,12 @@ service RaftService {
 }
 
 message LogRecord {
-  string level = 1;
-  string message = 2;
-  map<string, string> attributes = 3;
-  int64 timestamp = 4;
-  int32 day = 5;
+  uint64 id = 1;
+  string level = 2;
+  string message = 3;
+  map<string, string> attributes = 4;
+  int64 timestamp = 5;
+  int32 day = 6;
 }
 
 message Entry {
@@ -30,12 +31,7 @@ message Entry {
 message BlankPayload {}
 
 message EntryNormalPayload {
-  repeated Request request = 1;
-}
-
-message Request {
-  uint64 id = 1;
-  LogRecord record = 2;
+  repeated LogRecord records = 1;
 }
 
 message EntryConfigChangePayload {

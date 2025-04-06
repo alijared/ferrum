@@ -1,5 +1,5 @@
 use crate::io::query::FromStreams;
-use crate::io::{get_sql_context, query};
+use crate::io::{get_session_context, query};
 use serde::Deserialize;
 
 #[derive(Deserialize)]
@@ -8,7 +8,7 @@ pub struct QueryParams {
 }
 
 pub async fn query<T: FromStreams>(params: QueryParams) -> Result<T, query::Error> {
-    let ctx = get_sql_context();
+    let ctx = get_session_context();
     let df = ctx
         .sql(&params.query)
         .await

@@ -1,5 +1,5 @@
 .idea
 /target
-logs/data
-logs/config.yaml
-logs/config-node1.yaml
+data
+config-node1.yaml
+config-node2.yaml
