@@ -33,6 +33,7 @@ processing using modern data processing techniques. The project consists of two 
 - File compaction (configurable frequency)
 - OpenTelemetry logs compatible gRPC server (see [OpenTelemetry gRPC server](#opentelemetry-grpc-server))
 - HTTP for querying data (see [HTTP API](#http-api-server))
+- Object storage support (currently only AWS S3)
 
 ## Key components
 
@@ -51,6 +52,10 @@ The logs system is built around several components:
 high-performance data processing
     * Implements compaction and periodic file management
     * Enables efficient querying and storage of log data using parquet
+
+3. Filesystems
+    * Local
+    * S3
 
 ### Query language (ferum-ql or fql). 
 Located in ferum-ql crate, this is a custom query language parser build with
@@ -126,8 +131,8 @@ See [example config](config.yaml.example) for details.
 
 ### In progress
 
-- [ ] S3 storage backend
-- [ ] Improve compaction strategy for better disk usage
+- [x] S3 storage backend
+- [x] Improve compaction strategy for better disk usage
 - [ ] Docker support
 
 ### Planned (short-term)

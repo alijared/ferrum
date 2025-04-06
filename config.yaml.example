@@ -3,13 +3,13 @@
 
 compaction_frequency: 60
 filesystem:
-#  local:
-#    data_dir: "/var/lib/ferrum/data" # directory to store persistent data
-  s3:
-    override_endpoint: "http://localhost:9000" # override directory (for local testing for example)
-    bucket_name: "test-bucket" # name of the bucket to store persistent data
-    access_key: "xxxxxx" # s3 access key (only used in conjunction with override_endpoint)
-    secret_key: "xxxxxx" # s3 secret key (only used in conjunction with override_endpoint)
+  local:
+    data_dir: "/var/lib/ferrum/data" # directory to store persistent data
+#  s3:
+#    override_endpoint: "http://localhost:9000" # override directory (for local testing for example)
+#    bucket_name: "test-bucket" # name of the bucket to store persistent data
+#    access_key: "xxxxxx" # s3 access key (only used in conjunction with override_endpoint)
+#    secret_key: "xxxxxx" # s3 secret key (only used in conjunction with override_endpoint)
 
 # Log table configuration
 log_table:
