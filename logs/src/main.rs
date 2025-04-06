@@ -53,8 +53,8 @@ async fn main() {
         }
     };
 
-    let (filesystem, url) = match object_store::Filesystem::new(config.filesystem).await {
-        Ok((f, url)) => (Arc::new(f), url),
+    let filesystem = match object_store::Filesystem::new(config.filesystem).await {
+        Ok(f) => Arc::new(f),
         Err(e) => {
             error!("Failed to initialize filesystem: {}", e);
             exit(1);
@@ -66,7 +66,7 @@ async fn main() {
         exit(1);
     }
     let session_context = io::get_session_context();
-    session_context.register_object_store(&url, filesystem.clone());
+    session_context.register_object_store(filesystem.url(), filesystem.clone());
 
     let raft_server_port = config.replication.advertise_port;
     let replica_config = config.replication;

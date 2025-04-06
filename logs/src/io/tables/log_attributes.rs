@@ -2,7 +2,9 @@ use crate::io::tables::generic::GenericTable;
 use crate::io::tables::Table;
 use crate::io::{tables, writer};
 use crate::server::grpc::opentelemetry::LogRecord;
-use datafusion::arrow::array::{Date32Array, RecordBatch, StringViewArray, TimestampNanosecondArray, UInt64Array};
+use datafusion::arrow::array::{
+    Date32Array, RecordBatch, StringViewArray, TimestampNanosecondArray, UInt64Array,
+};
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit};
 use datafusion::config::{ParquetColumnOptions, ParquetOptions, TableParquetOptions};
 use datafusion::dataframe::DataFrameWriteOptions;
@@ -161,20 +163,19 @@ pub async fn initialize(
             ..Default::default()
         },
     );
-    
-    let format = ParquetFormat::default()
-        .with_options(TableParquetOptions {
-            global: ParquetOptions {
-                pushdown_filters: true,
-                reorder_filters: true,
-                compression: Some(Compression::SNAPPY.to_string()),
-                maximum_parallel_row_group_writers: num_cpus::get(),
-                bloom_filter_on_write: true,
-                ..Default::default()
-            },
-            column_specific_options: column_opts,
+
+    let format = ParquetFormat::default().with_options(TableParquetOptions {
+        global: ParquetOptions {
+            pushdown_filters: true,
+            reorder_filters: true,
+            compression: Some(Compression::SNAPPY.to_string()),
+            maximum_parallel_row_group_writers: num_cpus::get(),
+            bloom_filter_on_write: true,
             ..Default::default()
-        });
+        },
+        column_specific_options: column_opts,
+        ..Default::default()
+    });
 
     let listing_opts = ListingOptions::new(Arc::new(format))
         .with_collect_stat(false)
@@ -183,7 +184,7 @@ pub async fn initialize(
 
     tables::register(
         NAME,
-        format!("/{}/", NAME),
+        filesystem.table_url(NAME),
         listing_opts,
         Arc::new(SCHEMA.clone()),
     )

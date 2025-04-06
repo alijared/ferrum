@@ -2,7 +2,9 @@ use crate::io::tables::generic::GenericTable;
 use crate::io::tables::Table;
 use crate::io::{tables, writer};
 use crate::server::grpc::opentelemetry::LogRecord;
-use datafusion::arrow::array::{Date32Array, RecordBatch, StringViewArray, TimestampNanosecondArray, UInt64Array};
+use datafusion::arrow::array::{
+    Date32Array, RecordBatch, StringViewArray, TimestampNanosecondArray, UInt64Array,
+};
 use datafusion::arrow::datatypes::{DataType, Field, FieldRef, Schema, TimeUnit};
 use datafusion::config::{ParquetColumnOptions, ParquetOptions, TableParquetOptions};
 use datafusion::dataframe::DataFrameWriteOptions;
@@ -151,7 +153,7 @@ pub async fn initialize(
 
     tables::register(
         NAME,
-        format!("/{}/", NAME),
+        filesystem.table_url(NAME),
         listing_opts,
         Arc::new(SCHEMA.clone()),
     )

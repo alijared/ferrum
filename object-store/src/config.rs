@@ -35,4 +35,10 @@ pub struct LocalFilesystemConfig {
 pub struct S3Config {
     pub bucket_name: String,
     pub override_endpoint: Option<String>,
+
+    #[serde(default)]
+    pub access_key: String,
+
+    #[serde(default)]
+    pub secret_key: String,
 }

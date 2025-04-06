@@ -1,5 +1,8 @@
 pub mod config;
 
+mod error;
+
+pub use error::Error;
 pub use object_store::path::Path;
 
 use crate::config::Config;
@@ -7,55 +10,68 @@ use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use dashmap::DashSet;
 use datafusion::dataframe::DataFrameWriteOptions;
-use datafusion::error::DataFusionError;
 use datafusion::prelude::{ParquetReadOptions, SessionContext};
 use futures::stream::BoxStream;
 use futures::{StreamExt, TryStreamExt};
 use log::{error, info};
+use object_store::aws::AmazonS3Builder;
 use object_store::{
     GetOptions, GetResult, ListResult, MultipartUpload, ObjectMeta, ObjectStore, PutMultipartOpts,
     PutOptions, PutPayload, PutResult,
 };
 use std::fmt::{Debug, Display, Formatter};
-use std::io;
 use std::sync::Arc;
 use url::Url;
 
 #[derive(Debug)]
 pub struct Filesystem {
+    kind: ObjectStoreKind,
+    url: Url,
     object_store: Arc<dyn ObjectStore>,
     marked_for_deletion: DashSet<Path>,
 }
 
 impl Filesystem {
-    pub async fn new(config: Config) -> Result<(Self, Url), Error> {
-        let (store, url) = match config.object_store {
-            config::ObjectStore::Local(c) => {
-                let path = c.data_dir.join("tables");
-                tokio::fs::create_dir_all(&path).await?;
+    pub async fn new(config: Config) -> Result<Self, Error> {
+        let (kind, store, url): (ObjectStoreKind, Arc<dyn ObjectStore>, Url) =
+            match config.object_store {
+                config::ObjectStore::Local(c) => {
+                    let path = c.data_dir.join("tables");
+                    tokio::fs::create_dir_all(&path).await?;
 
-                let path = tokio::fs::canonicalize(std::path::Path::new(&path)).await?;
-                let url = Url::from_directory_path(&path).map_err(|_| {
-                    object_store::Error::InvalidPath {
-                        source: object_store::path::Error::InvalidPath { path: path.clone() },
+                    let path = tokio::fs::canonicalize(std::path::Path::new(&path)).await?;
+                    let url = Url::from_directory_path(&path).map_err(|_| {
+                        object_store::Error::InvalidPath {
+                            source: object_store::path::Error::InvalidPath { path: path.clone() },
+                        }
+                    })?;
+
+                    let store = object_store::local::LocalFileSystem::new_with_prefix(&path)?;
+                    (ObjectStoreKind::Local, Arc::new(store), url)
+                }
+                config::ObjectStore::S3(c) => {
+                    let bucket = c.bucket_name.as_str();
+                    let mut store = AmazonS3Builder::from_env().with_bucket_name(bucket);
+                    if let Some(endpoint) = c.override_endpoint {
+                        store = store
+                            .with_endpoint(endpoint)
+                            .with_access_key_id(c.access_key)
+                            .with_secret_access_key(c.secret_key)
+                            .with_allow_http(true);
                     }
-                })?;
 
-                let store = object_store::local::LocalFileSystem::new_with_prefix(&path)?;
-                (store, url)
-            }
-            config::ObjectStore::S3(c) => {
-                unreachable!()
-            }
-        };
+                    let store = store.build()?;
+                    let url = Url::parse(format!("s3://{}/tables", bucket).as_str()).unwrap();
+                    (ObjectStoreKind::S3, Arc::new(store), url)
+                }
+            };
 
-        Ok((
-            Self {
-                object_store: Arc::new(store),
-                marked_for_deletion: DashSet::new(),
-            },
+        Ok(Self {
+            kind,
             url,
-        ))
+            object_store: Arc::new(store),
+            marked_for_deletion: DashSet::new(),
+        })
     }
 
     pub async fn compact(
@@ -66,7 +82,13 @@ impl Filesystem {
         df_write_opts: DataFrameWriteOptions,
     ) -> Result<(), Error> {
         let day = partition_day.format("%Y-%m-%d").to_string();
-        let prefix = Path::from(format!("/{}/day={}", table_name, day));
+        let base_prefix = format!("/{}/day={}", table_name, day);
+        let base_prefix = base_prefix.as_str();
+        let prefix = match self.kind {
+            ObjectStoreKind::Local => Path::from(base_prefix),
+            ObjectStoreKind::S3 => Path::from(format!("/tables{}", base_prefix)),
+        };
+
         let parts: Vec<(Path, String)> = self
             .list(Some(&prefix))
             .map_ok(|m| (m.location.clone(), format!("/{}", m.location)))
@@ -87,16 +109,17 @@ impl Filesystem {
                 parts
                     .clone()
                     .into_iter()
-                    .map(|(_, l)| l)
+                    .map(|(p, l)| match self.kind {
+                        ObjectStoreKind::Local => l,
+                        ObjectStoreKind::S3 => {
+                            format!("{}{}/{}", self.url, base_prefix, p.filename().unwrap())
+                        }
+                    })
                     .collect::<Vec<_>>(),
                 ParquetReadOptions::default(),
             )
             .await?;
 
-        // let table_ref = ctx.table(table_name).await?;
-        // let table_schema = table_ref.schema();
-        // let cast_df = df.into_view().with_schema(table_schema).await?;
-        //
         df.write_table(table_name, df_write_opts).await?;
         for (l, _) in parts {
             self.marked_for_deletion.insert(l);
@@ -111,6 +134,21 @@ impl Filesystem {
         self.marked_for_deletion.clear();
 
         Ok(())
+    }
+
+    pub fn url(&self) -> &Url {
+        &self.url
+    }
+
+    pub fn table_url(&self, table_name: &str) -> String {
+        match self.kind {
+            ObjectStoreKind::Local => {
+                format!("/{}/", table_name)
+            }
+            ObjectStoreKind::S3 => {
+                format!("{}/{}/", self.url, table_name)
+            }
+        }
     }
 }
 
@@ -178,32 +216,8 @@ impl Display for Filesystem {
     }
 }
 
-#[derive(Debug, thiserror::Error)]
-pub enum Error {
-    #[error("{0}")]
-    Io(io::Error),
-
-    #[error("{0}")]
-    ObjectStore(object_store::Error),
-
-    #[error("{0}")]
-    DataFusion(DataFusionError),
-}
-
-impl From<io::Error> for Error {
-    fn from(error: io::Error) -> Self {
-        Self::Io(error)
-    }
-}
-
-impl From<object_store::Error> for Error {
-    fn from(error: object_store::Error) -> Self {
-        Self::ObjectStore(error)
-    }
-}
-
-impl From<DataFusionError> for Error {
-    fn from(error: DataFusionError) -> Self {
-        Self::DataFusion(error)
-    }
+#[derive(Debug)]
+pub enum ObjectStoreKind {
+    Local,
+    S3,
 }
