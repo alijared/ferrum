@@ -7,7 +7,6 @@ pub struct Query {
 
 #[derive(Default, Clone)]
 pub struct Selector {
-    pub level: Option<Filter>,
     pub message: Option<Filter>,
     pub attributes: Vec<Filter>,
 }
@@ -33,5 +32,4 @@ pub enum ComparisonOp {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Function {
     Count,
-    Json,
 }

@@ -1,15 +1,13 @@
-use crate::{io, server};
+use crate::server;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use axum::Json;
-use datafusion::arrow::error::ArrowError;
 use datafusion::common::DataFusionError;
 use log::{error, info};
 use serde_json::json;
 use tokio::net::TcpListener;
 use tokio_util::sync::CancellationToken;
 
-mod loki;
 mod query;
 mod router;
 mod schemas;
@@ -38,13 +36,11 @@ pub struct ApiError {
     message: String,
 }
 
-impl From<io::query::Error> for ApiError {
-    fn from(error: io::query::Error) -> Self {
+impl From<query_engine::Error> for ApiError {
+    fn from(error: query_engine::Error) -> Self {
         match error {
-            io::query::Error::Query(s) => ApiError::new(StatusCode::BAD_REQUEST, &s),
-            io::query::Error::UnsupportedFunction(s) => ApiError::new(StatusCode::BAD_REQUEST, &s),
-            io::query::Error::DataFusion(e) => ApiError::from(e),
-            io::query::Error::Arrow(e) => ApiError::from(e),
+            query_engine::Error::ParseQuery(s) => ApiError::new(StatusCode::BAD_REQUEST, &s),
+            query_engine::Error::DataFusion(e) => e.into(),
         }
     }
 }
@@ -59,12 +55,6 @@ impl From<DataFusionError> for ApiError {
             }
             _ => ApiError::internal_error(&error.to_string()),
         }
-    }
-}
-
-impl From<ArrowError> for ApiError {
-    fn from(error: ArrowError) -> Self {
-        ApiError::internal_error(&error.to_string())
     }
 }
 

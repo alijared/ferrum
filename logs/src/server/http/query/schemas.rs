@@ -1,12 +1,84 @@
-use crate::io::query;
 use crate::server::http::schemas::LogWithAttributesTuple;
-use chrono::{DateTime, Utc};
-use datafusion::execution::SendableRecordBatchStream;
-use serde::Serialize;
-use serde_json::json;
+use chrono::{DateTime, TimeZone, Utc};
+use datafusion::arrow::array::RecordBatch;
+use query_engine::FromRecordBatch;
+use serde::de::Visitor;
+use serde::{de, Deserialize, Deserializer, Serialize};
 use std::collections::HashMap;
-use futures::StreamExt;
-use tonic::async_trait;
+use std::fmt;
+
+#[derive(Deserialize)]
+pub struct QuerySqlParams {
+    pub query: String,
+}
+
+#[derive(Deserialize)]
+pub struct QueryLogsParams {
+    pub query: Option<String>,
+    #[serde(flatten)]
+    pub time_range: TimeRangeQueryParams,
+    pub sort: Option<SortOrder>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct QueryAttributeValuesParams {
+    #[serde(flatten)]
+    pub time_range: TimeRangeQueryParams,
+    pub limit: Option<usize>,
+}
+
+#[derive(Deserialize)]
+pub struct TimeRangeQueryParams {
+    #[serde(alias = "start", deserialize_with = "deserialize_datetime")]
+    pub from: DateTime<Utc>,
+    #[serde(alias = "end", deserialize_with = "deserialize_datetime")]
+    pub to: DateTime<Utc>,
+}
+
+#[derive(Clone, Deserialize)]
+pub enum SortOrder {
+    #[serde(rename = "asc", alias = "forward")]
+    Ascending,
+    #[serde(rename = "desc", alias = "backward")]
+    Descending,
+}
+
+impl From<SortOrder> for bool {
+    fn from(order: SortOrder) -> Self {
+        match order {
+            SortOrder::Ascending => true,
+            SortOrder::Descending => false,
+        }
+    }
+}
+
+fn deserialize_datetime<'de, D>(deserializer: D) -> Result<DateTime<Utc>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    struct DateTimeVisitor;
+
+    impl Visitor<'_> for DateTimeVisitor {
+        type Value = DateTime<Utc>;
+
+        fn expecting(&self, formatter: &mut fmt::Formatter) -> fmt::Result {
+            formatter.write_str("an RFC3339 string or Unix timestamp in nanoseconds")
+        }
+
+        fn visit_str<E>(self, value: &str) -> Result<Self::Value, E>
+        where
+            E: de::Error,
+        {
+            if let Ok(ts) = value.parse::<i64>() {
+                return Ok(Utc.timestamp_nanos(ts));
+            }
+            value.parse::<DateTime<Utc>>().map_err(de::Error::custom)
+        }
+    }
+
+    deserializer.deserialize_any(DateTimeVisitor)
+}
 
 #[derive(Serialize)]
 #[serde(untagged)]
@@ -15,62 +87,26 @@ pub enum LogsResponse {
     Logs(Vec<Log>),
 }
 
-impl query::Log for LogsResponse {}
-
-impl TryFrom<usize> for LogsResponse {
-    type Error = query::Error;
-
-    fn try_from(count: usize) -> Result<Self, Self::Error> {
-        Ok(Self::Count { count })
-    }
-}
-
-#[async_trait]
-impl query::FromStreams for LogsResponse {
-    async fn try_from_streams(
-        streams: Vec<SendableRecordBatchStream>,
-        should_serialize_message: bool,
-    ) -> Result<Self, query::Error> {
-        let mut logs = Vec::new();
-        for mut stream in streams {
-            while let Some(batch_result) = stream.next().await {
-                let batch = batch_result?;
-                let tuple = LogWithAttributesTuple::from(&batch);
-                for i in 0..batch.num_rows() {
-                    let message = tuple.message(i);
-                    let json_message = if should_serialize_message {
-                        serde_json::from_str(message).unwrap_or(Some(json!({"message": message})))
-                    } else {
-                        None
-                    };
-
-                    let message = if json_message.is_some() {
-                        None
-                    } else {
-                        Some(message.to_string())
-                    };
-
-                    logs.push(Log {
-                        timestamp: tuple.timestamp(i),
-                        level: tuple.level(i).to_string(),
-                        message,
-                        json_message,
-                        attributes: tuple.attributes(i),
-                    });
-                }
-            }
-        }
-        Ok(Self::Logs(logs))
-    }
-}
-
 #[derive(Serialize)]
 pub struct Log {
     pub timestamp: DateTime<Utc>,
     pub level: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub message: Option<String>,
-    #[serde(rename = "message", skip_serializing_if = "Option::is_none")]
-    pub json_message: Option<serde_json::Value>,
+    pub message: String,
     pub attributes: HashMap<String, String>,
+}
+
+impl FromRecordBatch for Log {
+    fn from_batch(batch: &RecordBatch) -> Vec<Self> {
+        let tuple = LogWithAttributesTuple::from(batch);
+        let mut logs = Vec::with_capacity(batch.num_rows());
+        for i in 0..batch.num_rows() {
+            logs.push(Log {
+                timestamp: tuple.timestamp(i),
+                level: tuple.level(i).to_string(),
+                message: tuple.message(i).to_string(),
+                attributes: tuple.attributes(i),
+            });
+        }
+        logs
+    }
 }

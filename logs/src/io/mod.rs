@@ -5,7 +5,6 @@ use datafusion::parquet::basic::Compression;
 use datafusion::prelude::{SessionConfig, SessionContext};
 use tokio::sync::{OnceCell, SetError};
 
-pub mod query;
 pub mod tables;
 pub mod writer;
 
