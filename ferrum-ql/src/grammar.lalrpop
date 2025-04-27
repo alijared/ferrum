@@ -81,5 +81,4 @@ MapFunctionHashSet: HashSet<ast::Function> = {
 
 MapFunction: ast::Function = {
 	"count" => ast::Function::Count,
-	"json" => ast::Function::Json,
 };

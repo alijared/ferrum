@@ -3,7 +3,7 @@ resolver = "2"
 members = [
     "ferrum-ql",
     "logs",
-    "object-store",
+    "object-store", "query-engine", "utils",
 ]
 
 [profile.release]

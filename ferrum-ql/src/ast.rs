@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct Query {
     pub selector: Selector,
     pub map_functions: HashSet<Function>,
@@ -33,5 +34,4 @@ pub enum ComparisonOp {
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Function {
     Count,
-    Json,
 }

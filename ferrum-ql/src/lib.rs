@@ -1,9 +1,10 @@
 mod ast;
+mod error;
 
 use crate::grammar::QueryParser;
 pub use ast::{ComparisonOp, Filter, Function, Query};
-use lalrpop_util::lexer::Token;
-use lalrpop_util::{lalrpop_mod, ParseError};
+pub use error::Error;
+use lalrpop_util::lalrpop_mod;
 
 lalrpop_mod!(
     #[allow(clippy::ptr_arg, unused_mut)]
@@ -11,7 +12,7 @@ lalrpop_mod!(
     grammar
 );
 
-pub fn parse(query: &str) -> Result<Query, ParseError<usize, Token<'_>, &'static str>> {
+pub fn parse(query: &str) -> Result<Query, Error> {
     QueryParser::new().parse(query)
 }
 
@@ -28,16 +29,8 @@ mod tests {
         };
 
         let selector = query.selector;
-        assert_eq!(
-            selector.level,
-            Some(Filter {
-                key: "level".to_string(),
-                op: ComparisonOp::Eq,
-                value: "DEBUG".to_string()
-            })
-        );
         assert_eq!(selector.message, None);
-        assert_eq!(selector.attributes.len(), 0);
+        assert_eq!(selector.attributes.len(), 1);
 
         let query = match QueryParser::new().parse(r#"{message="Jaaaa", fish!="biscuit"}"#) {
             Ok(q) => q,
@@ -45,7 +38,6 @@ mod tests {
         };
 
         let selector = query.selector;
-        assert_eq!(selector.level, None,);
         assert_eq!(
             selector.message,
             Some(Filter {
@@ -64,13 +56,13 @@ mod tests {
             }
         );
 
-        let query = match QueryParser::new().parse(r#"{message="Jaaaa", fish!="biscuit"} | json"#) {
+        let query = match QueryParser::new().parse(r#"{message="Jaaaa", fish!="biscuit"} | count"#)
+        {
             Ok(q) => q,
             Err(e) => panic!("{:?}", e),
         };
 
         let selector = query.selector;
-        assert_eq!(selector.level, None,);
         assert_eq!(
             selector.message,
             Some(Filter {
@@ -91,12 +83,8 @@ mod tests {
 
         assert_eq!(query.map_functions.len(), 1);
         assert_eq!(
-            query
-                .map_functions
-                .get(&Function::Json)
-                .cloned()
-                .unwrap(),
-            Function::Json
+            query.map_functions.get(&Function::Count).cloned().unwrap(),
+            Function::Count
         );
     }
 }

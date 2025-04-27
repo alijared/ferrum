@@ -7,7 +7,6 @@ edition = "2021"
 anyhow = "1.0.97"
 async-raft = "0.6.1"
 axum = "0.8.1"
-arrow-json = "54.2.1"
 chrono.workspace = true
 clap = { version = "4.5.31", features = ["derive"] }
 env_logger = "0.11.6"
@@ -20,6 +19,7 @@ log = "0.4.26"
 num_cpus = "1.16.0"
 object-store = { path = "../object-store" }
 prost = "0.13.5"
+query-engine = { path = "../query-engine" }
 redb = "2.4.0"
 serde.workspace = true
 serde_json.workspace = true

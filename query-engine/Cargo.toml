@@ -1,0 +1,14 @@
+[package]
+name = "query-engine"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+arrow-json = "54.2.1"
+async-trait.workspace = true
+chrono.workspace = true
+datafusion.workspace = true
+ferrum-ql = { path = "../ferrum-ql" }
+futures.workspace = true
+thiserror.workspace = true
+utils = { path = "../utils" }
