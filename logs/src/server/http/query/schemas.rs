@@ -1,6 +1,6 @@
 use crate::server::http::schemas::LogWithAttributesTuple;
 use chrono::{DateTime, TimeZone, Utc};
-use datafusion::arrow::array::RecordBatch;
+use datafusion::arrow::array::{AsArray, RecordBatch};
 use query_engine::FromRecordBatch;
 use serde::de::Visitor;
 use serde::{de, Deserialize, Deserializer, Serialize};
@@ -108,5 +108,19 @@ impl FromRecordBatch for Log {
             });
         }
         logs
+    }
+}
+
+#[derive(Serialize)]
+pub struct StringValue(String);
+
+impl FromRecordBatch for StringValue {
+    fn from_batch(batch: &RecordBatch) -> Vec<Self> {
+        let mut values = Vec::with_capacity(batch.num_rows());
+        for i in 0..batch.num_rows() {
+            let value = batch.column(0).as_string_view().value(i);
+            values.push(StringValue(value.to_string()));
+        }
+        values
     }
 }

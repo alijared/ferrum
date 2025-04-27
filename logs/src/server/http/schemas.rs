@@ -1,6 +1,6 @@
 use chrono::{DateTime, TimeZone, Utc};
 use datafusion::arrow::array::{
-    Array, ArrayAccessor, AsArray, ListArray, MapArray, StringViewArray, TimestampNanosecondArray,
+    Array, AsArray, ListArray, MapArray, StringViewArray, TimestampNanosecondArray,
 };
 use datafusion::arrow::record_batch::RecordBatch;
 use std::collections::HashMap;

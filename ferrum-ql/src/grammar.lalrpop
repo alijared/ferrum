@@ -25,6 +25,7 @@ Selector: ast::Selector = {
  		let mut selector = ast::Selector::default();
     	for filter in filters {
             match filter.key.as_str() {
+                "level" => selector.level = Some(filter),
                 "message" => selector.message = Some(filter),
                 _ => selector.attributes.push(filter),
             }

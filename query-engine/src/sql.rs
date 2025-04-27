@@ -15,8 +15,6 @@ impl From<SqlResult> for Vec<u8> {
 
 pub async fn query(ctx: &SessionContext, query: &str) -> Result<SqlResult, Error> {
     let df = ctx.sql(query).await?;
-    
-    df.clone().show().await?;
     <SqlResult as AsyncTryFrom<DataFrame>>::try_from(df).await
 }
 

@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+#[derive(Clone)]
 pub struct Query {
     pub selector: Selector,
     pub map_functions: HashSet<Function>,
@@ -7,6 +8,7 @@ pub struct Query {
 
 #[derive(Default, Clone)]
 pub struct Selector {
+    pub level: Option<Filter>,
     pub message: Option<Filter>,
     pub attributes: Vec<Filter>,
 }

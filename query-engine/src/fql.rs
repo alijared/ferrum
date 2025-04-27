@@ -3,10 +3,15 @@ use chrono::Datelike;
 use chrono::{DateTime, TimeDelta, Utc};
 use datafusion::common::{Column, ScalarValue, TableReference};
 use datafusion::dataframe;
-use datafusion::logical_expr::{Expr, JoinType, Literal, SortExpr, lit, lit_timestamp_nano};
+use datafusion::execution::SessionState;
+use datafusion::logical_expr::{
+    Expr, JoinType, Literal, LogicalPlan, SortExpr, lit, lit_timestamp_nano,
+};
 use datafusion::prelude::{SessionContext, col, regexp_match};
 use futures::TryStreamExt;
 use std::ops::Sub;
+
+const DEFAULT_LIMIT: usize = 1000;
 
 pub struct Builder<'a> {
     ctx: &'a SessionContext,
@@ -27,7 +32,7 @@ impl<'a> Builder<'a> {
                 to: now,
             },
             sort: Vec::new(),
-            limit: 1000,
+            limit: DEFAULT_LIMIT,
         }
     }
 
@@ -108,6 +113,7 @@ impl From<TimeRange> for Expr {
     }
 }
 
+#[derive(Clone)]
 pub struct DataFrame {
     inner: dataframe::DataFrame,
     sort: Vec<SortExpr>,
@@ -121,6 +127,26 @@ impl DataFrame {
             sort,
             limit,
         }
+    }
+
+    pub fn dataframe(session_state: SessionState, plan: LogicalPlan) -> dataframe::DataFrame {
+        dataframe::DataFrame::new(session_state, plan)
+    }
+
+    pub fn into_parts(self) -> (SessionState, LogicalPlan) {
+        self.inner.into_parts()
+    }
+
+    pub fn select(mut self, expr_list: Vec<Expr>) -> Result<Self, Error> {
+        self.inner = self.inner.select(expr_list)?;
+
+        Ok(self)
+    }
+
+    pub fn select_columns(mut self, columns: &[&str]) -> Result<Self, Error> {
+        self.inner = self.inner.select_columns(columns)?;
+
+        Ok(self)
     }
 
     pub fn filter(mut self, predicate: Expr) -> Result<Self, Error> {
@@ -158,6 +184,12 @@ impl DataFrame {
         Ok(self)
     }
 
+    pub fn unique(mut self) -> Result<Self, Error> {
+        self.inner = self.inner.distinct()?;
+
+        Ok(self)
+    }
+
     pub async fn count(self) -> Result<usize, Error> {
         self.inner.count().await.map_err(Into::into)
     }
@@ -174,6 +206,12 @@ impl DataFrame {
         }
 
         Ok(rows)
+    }
+}
+
+impl From<dataframe::DataFrame> for DataFrame {
+    fn from(df: dataframe::DataFrame) -> Self {
+        DataFrame::new(df, vec![], DEFAULT_LIMIT)
     }
 }
 
